@@ -1,0 +1,257 @@
+<template>
+    <div class="vault-shell">
+        <!-- TOP BAR -->
+        <header class="vault-topbar">
+            <div class="brand">
+                <span class="brand-icon">🔐</span>
+                <span class="brand-text">{vaultTitle}</span>
+            </div>
+            
+            <div class="topbar-filters">
+                <lightning-combobox 
+                    class="filter-input"
+                    label="Component Type"
+                    value={family}
+                    options={familyOptions}
+                    onchange={onFamilyChange}>
+                </lightning-combobox>
+                
+                <lightning-combobox 
+                    class="filter-input"
+                    label="View History Of"
+                    value={contributor}
+                    options={contributorOptions}
+                    onchange={onContributorChange}>
+                </lightning-combobox>
+            </div>
+            
+            <div class="topbar-actions">
+                <lightning-button 
+                    class="action-btn"
+                    variant="brand"
+                    label="Admin"
+                    onclick={toggleAdminPanel}>
+                </lightning-button>
+            </div>
+        </header>
+        
+        <!-- ADMIN PANEL -->
+        <template if:true={showAdminPanel}>
+            <div class="admin-panel">
+                <div class="admin-content">
+                    <h3 class="admin-title">Administration</h3>
+                    <div class="admin-actions">
+                        <lightning-button 
+                            label="Run Poller Now (60min lookback)"
+                            onclick={runPollerNow}>
+                        </lightning-button>
+                        <lightning-button 
+                            label="Start Scheduler (5min)"
+                            onclick={startScheduler}>
+                        </lightning-button>
+                        <lightning-button 
+                            label="Stop Scheduler"
+                            onclick={stopScheduler}>
+                        </lightning-button>
+                    </div>
+                </div>
+            </div>
+        </template>
+        
+        <!-- MAIN CONTENT -->
+        <div class="vault-main">
+            <!-- LEFT PANEL: VAULT HUB -->
+            <aside class="vault-left" onscroll={handleListScroll}>
+                <div class="vault-toolbar">
+                    <lightning-input 
+                        class="search-input"
+                        type="search"
+                        placeholder="Search components..."
+                        value={search}
+                        onchange={onSearchChange}>
+                    </lightning-input>
+                    <div class="filter-info">
+                        <span class="filter-badge">{contributorLabel}</span>
+                    </div>
+                </div>
+                
+                <ul class="component-cards">
+                    <template for:each={dedupList} for:item="row">
+                        <li key={row.id} 
+                            class="component-card" 
+                            onclick={selectBase}
+                            data-basename={row.baseName}
+                            data-type={row.type}
+                            data-name={row.name}>
+                            
+                            <div class="card-header">
+                                <h3 class="card-title">{row.baseName}</h3>
+                                <span class="card-type-badge">{row.type}</span>
+                            </div>
+                            
+                            <div class="card-meta">
+                                <template if:true={row.subType}>
+                                    <span class="meta-chip">{row.subType}</span>
+                                </template>
+                                <template if:true={row.latestVersion}>
+                                    <span class="meta-chip version">v{row.latestVersion}</span>
+                                </template>
+                                <template if:true={row.versionCount}>
+                                    <span class="meta-chip count">{row.versionCount} versions</span>
+                                </template>
+                            </div>
+                            
+                            <template if:true={row.latestAiSummary}>
+                                <div class="card-summary">{row.latestAiSummary}</div>
+                            </template>
+                            
+                            <div class="card-footer">
+                                <template if:true={row.latestAt}>
+                                    <span class="card-date">
+                                        <lightning-formatted-date-time 
+                                            value={row.latestAt}
+                                            year="numeric"
+                                            month="short"
+                                            day="2-digit">
+                                        </lightning-formatted-date-time>
+                                    </span>
+                                </template>
+                            </div>
+                        </li>
+                    </template>
+                </ul>
+                
+                <template if:true={listLoading}>
+                    <div class="loading-msg">Loading components...</div>
+                </template>
+            </aside>
+            
+            <!-- RIGHT PANEL: TIMELINE VIEW -->
+            <section class="vault-right" onscroll={handleTlScroll}>
+                <div class="timeline-header">
+                    <template if:true={hasSelection}>
+                        <div class="timeline-title">
+                            <h2>{selectedComponentName}</h2>
+                            <span class="timeline-type">{selectedType}</span>
+                        </div>
+                        <div class="timeline-controls">
+                            <lightning-combobox 
+                                class="version-select"
+                                value={selectedVersion}
+                                options={versionOptions}
+                                placeholder="Select version"
+                                onchange={onVersionChange}>
+                            </lightning-combobox>
+                            <lightning-button 
+                                variant="brand"
+                                label="Track & Ingest All Versions"
+                                onclick={trackAndIngestBase}>
+                            </lightning-button>
+                        </div>
+                    </template>
+                </div>
+                
+                <template if:false={hasSelection}>
+                    <div class="empty-state">
+                        <div class="empty-icon">📦</div>
+                        <h3>Select a Component</h3>
+                        <p>Choose a component from the vault to explore its evolution timeline</p>
+                    </div>
+                </template>
+                
+                <template if:true={hasSelection}>
+                    <div class="timeline">
+                        <template for:each={tlItems} for:item="snap">
+                            <article key={snap.id} class="timeline-entry">
+                                <div class="entry-timeline-marker">
+                                    <span class="timeline-dot"></span>
+                                    <span class="timeline-line"></span>
+                                </div>
+                                
+                                <div class="entry-content">
+                                    <header class="entry-header" onclick={toggleSnapshot} data-id={snap.id}>
+                                        <div class="entry-meta">
+                                            <span class="entry-badge">{snap.changeType}</span>
+                                            <span class="entry-version">v{snap.version}</span>
+                                            <template if:true={snap.actorName}>
+                                                <span class="entry-actor">by {snap.actorName}</span>
+                                            </template>
+                                            <span class="entry-source">{snap.source}</span>
+                                        </div>
+                                        <span class="entry-time">{snap.formattedDate}</span>
+                                    </header>
+                                    
+                                    <!-- AI Summary (always visible) -->
+                                    <template if:true={snap.aiNotesText}>
+                                        <div class="entry-ai-notes">
+                                            <p>{snap.aiNotesText}</p>
+                                        </div>
+                                    </template>
+                                    
+                                    <!-- Element Impacts -->
+                                    <template if:true={snap.impacts}>
+                                        <template if:true={snap.impacts.length}>
+                                            <div class="entry-impacts">
+                                                <h4 class="impacts-title">Element Changes</h4>
+                                                <ul class="impacts-list">
+                                                    <template for:each={snap.impacts} for:item="impact">
+                                                        <li key={impact} class="impact-item">{impact}</li>
+                                                    </template>
+                                                </ul>
+                                            </div>
+                                        </template>
+                                    </template>
+                                    
+                                    <!-- Expandable Details -->
+                                    <template if:true={snap.isExpanded}>
+                                        <div class="entry-details">
+                                            <div class="detail-section">
+                                                <div class="detail-header">
+                                                    <h4>Full Diff</h4>
+                                                    <lightning-button 
+                                                        icon-name="utility:copy"
+                                                        variant="neutral"
+                                                        size="small"
+                                                        onclick={copyDiff}
+                                                        data-id={snap.id}>
+                                                    </lightning-button>
+                                                </div>
+                                                <pre class="diff-view">{snap.diffText}</pre>
+                                            </div>
+                                            
+                                            <div class="detail-section">
+                                                <div class="detail-header">
+                                                    <h4>Raw Metadata (JSON)</h4>
+                                                    <lightning-button 
+                                                        icon-name="utility:copy"
+                                                        variant="neutral"
+                                                        size="small"
+                                                        onclick={copyJson}
+                                                        data-id={snap.id}>
+                                                    </lightning-button>
+                                                </div>
+                                                <pre class="json-view">{snap.rawJson}</pre>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    
+                                    <div class="entry-expand-btn">
+                                        <lightning-button 
+                                            variant="neutral"
+                                            onclick={toggleSnapshot}
+                                            data-id={snap.id}>
+                                        </lightning-button>
+                                    </div>
+                                </div>
+                            </article>
+                        </template>
+                        
+                        <template if:true={tlLoading}>
+                            <div class="loading-msg">Loading timeline...</div>
+                        </template>
+                    </div>
+                </template>
+            </section>
+        </div>
+    </div>
+</template>

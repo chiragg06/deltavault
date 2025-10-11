@@ -1,0 +1,116 @@
+<template>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">Omni Logbook</div>
+      <div class="actions">
+        <lightning-button variant="neutral" label="Manage" onclick={openManage}></lightning-button>
+        <lightning-button variant="brand" label="Refresh" onclick={refresh}></lightning-button>
+        <div class="chip">{statusText}</div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="section-title">Vault</div>
+
+        <template if:true={recentItems}>
+          <ul class="tree">
+            <template for:each={recentItems} for:item="it">
+              <li key={it.id}
+                  class="item"
+                  data-id={it.id}
+                  onclick={select}>
+                <span class="file">📄</span>
+                <strong>{it.type}</strong> — {it.name}
+              </li>
+            </template>
+          </ul>
+        </template>
+
+        <template if:false={recentItems}>
+          <p class="muted">Loading…</p>
+        </template>
+      </aside>
+
+      <main class="main">
+        <div class="tabs">
+          <button class={notesTabClass} data-tab="notes" onclick={switchTab}>Notes</button>
+          <button class={diffTabClass} data-tab="diff" onclick={switchTab}>Diff</button>
+          <button class={rawTabClass} data-tab="raw" onclick={switchTab}>Raw</button>
+          <button class={timelineTabClass} data-tab="timeline" onclick={switchTab}>Timeline</button>
+        </div>
+
+        <!-- NOTES -->
+        <section if:true={showNotes} class="tab">
+          <h1 class="title">{title}</h1>
+          <div class="markdown" lwc:dom="manual"></div>
+        </section>
+
+        <!-- DIFF (enhanced rendering) -->
+        <section if:true={showDiff} class="tab">
+          <div class="diff" lwc:dom="manual"></div>
+        </section>
+
+        <!-- RAW -->
+        <section if:true={showRaw} class="tab">
+          <pre class="block">{details.rawText}</pre>
+        </section>
+
+        <!-- TIMELINE (human-friendly timestamps) -->
+        <section if:true={showTimeline} class="tab">
+          <ul class="timeline">
+            <template for:each={timelineRows} for:item="t">
+              <li key={t.key}>
+                <span class="ver">v{t.version}</span>
+                <span class="when">{t.when}</span>
+                — <span class="actor">{t.actor}</span>
+              </li>
+            </template>
+          </ul>
+        </section>
+      </main>
+    </div>
+
+    <!-- Manage Modal -->
+    <template if:true={showManage}>
+      <section role="dialog" tabindex="-1" class="modal">
+        <div class="modal-card">
+          <header class="modal-header">
+            <h2>Select OmniScripts</h2>
+            <button class="x" title="Close" onclick={closeManage}>×</button>
+          </header>
+
+          <div class="modal-body">
+            <lightning-input
+              type="search"
+              value={search}
+              label="Search"
+              onchange={onSearch}>
+            </lightning-input>
+
+            <div class="list">
+              <template if:true={available}>
+                <template for:each={available} for:item="s">
+                  <label key={s.id} class="row">
+                    <input type="checkbox" value={s.id} checked={s.checked} onchange={toggle}/>
+                    <span class="name">{s.name}</span>
+                    <span class="meta">{s.type} {s.subType}</span>
+                    <span class="meta">{s.lastModified}</span>
+                  </label>
+                </template>
+              </template>
+              <template if:false={available}>
+                <p class="muted">No items.</p>
+              </template>
+            </div>
+          </div>
+
+          <footer class="modal-footer">
+            <lightning-button variant="neutral" label="Cancel" onclick={closeManage}></lightning-button>
+            <lightning-button variant="brand" label="Track & Ingest" onclick={saveManage}></lightning-button>
+          </footer>
+        </div>
+      </section>
+    </template>
+  </div>
+</template>

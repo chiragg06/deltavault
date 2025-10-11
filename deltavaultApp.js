@@ -1,4 +1,4 @@
-import { LightningElement, track, wire } from 'lwc';
+import { LightningElement, track } from 'lwc';
 import getComponentsPage from '@salesforce/apex/DV_VaultApi.getComponentsPage';
 import getVersionsForBase from '@salesforce/apex/DV_VaultApi.getVersionsForBase';
 import getSnapshotsForVersion from '@salesforce/apex/DV_VaultApi.getSnapshotsForVersion';
@@ -9,6 +9,9 @@ import startSchedulerApex from '@salesforce/apex/DV_AdminApi.startScheduler';
 import stopSchedulerApex from '@salesforce/apex/DV_AdminApi.stopScheduler';
 
 export default class DeltavaultApp extends LightningElement {
+    // Stage control: 'door' → 'selector' → 'timeline'
+    @track currentStage = 'door';
+    
     // Filters
     family = 'OmniProcess';
     contributor = 'all';
@@ -21,20 +24,20 @@ export default class DeltavaultApp extends LightningElement {
     ];
     
     @track contributorOptions = [];
-    @track listItemsRaw = [];
+    @track componentList = [];
     listCursor = null;
     listLoading = false;
     
-    // Selection
+    // Selection state
     selectedBaseName = null;
     selectedType = null;
     selectedComponentName = null;
     
-    @track versionOptions = [];
-    selectedVersion = null;
+    @track versionCards = [];
+    selectedVersionForHistory = null;
     
     // Timeline
-    @track tlItems = [];
+    @track historyItems = [];
     tlCursor = null;
     tlLoading = false;
     tlIdSet = new Set();
@@ -45,39 +48,30 @@ export default class DeltavaultApp extends LightningElement {
     
     connectedCallback() {
         this.loadContributors();
-        this.fetchList(true);
     }
     
-    // Load contributors list
+    // === STAGE GETTERS ===
+    get isDoorStage() { return this.currentStage === 'door'; }
+    get isSelectorStage() { return this.currentStage === 'selector'; }
+    get isTimelineStage() { return this.currentStage === 'timeline'; }
+    
+    // === DOOR STAGE ===
+    enterVault() {
+        this.currentStage = 'selector';
+        this.fetchComponentList(true);
+    }
+    
+    // === COMPONENT SELECTOR STAGE ===
     async loadContributors() {
         try {
             const result = await getContributors({ family: this.family });
             this.contributorOptions = result || [];
         } catch(e) {
-            console.error('Error loading contributors:', e);
+            console.error('loadContributors error:', e);
         }
     }
     
-    get hasSelection() {
-        return !!this.selectedBaseName;
-    }
-    
-    get vaultTitle() {
-        return `DeltaVault • ${this.familyLabel}`;
-    }
-    
-    get familyLabel() {
-        const opt = this.familyOptions.find(o => o.value === this.family);
-        return opt ? opt.label : 'Components';
-    }
-    
-    get contributorLabel() {
-        const opt = this.contributorOptions.find(o => o.value === this.contributor);
-        return opt ? opt.label : 'All Contributors';
-    }
-    
-    // Fetch component list
-    async fetchList(reset = false) {
+    async fetchComponentList(reset = false) {
         if (this.listLoading) return;
         this.listLoading = true;
         
@@ -86,97 +80,72 @@ export default class DeltavaultApp extends LightningElement {
                 family: this.family,
                 contributor: this.contributor,
                 search: this.search,
-                pageSize: 40,
+                pageSize: 50,
                 cursor: reset ? null : this.listCursor
             });
             
-            if (reset) {
-                this.listItemsRaw = [];
-            }
-            
-            this.listItemsRaw = [...this.listItemsRaw, ...(page.items || [])];
+            if (reset) this.componentList = [];
+            this.componentList = [...this.componentList, ...(page.items || [])];
             this.listCursor = page.nextCursor || null;
         } catch(e) {
-            console.error('Error fetching list:', e);
+            console.error('fetchComponentList error:', e);
         } finally {
             this.listLoading = false;
         }
     }
     
-    // Deduplicated list (already done server-side, but keeping for safety)
-    get dedupList() {
+    get dedupedComponents() {
         const map = new Map();
-        for (const r of this.listItemsRaw) {
+        for (const r of this.componentList) {
             const key = r.baseName || r.name;
-            if (!map.has(key)) {
-                map.set(key, r);
-            }
+            if (!map.has(key)) map.set(key, r);
         }
         return Array.from(map.values());
     }
     
-    // List scroll handler
     handleListScroll(e) {
         const el = e.currentTarget;
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 32) {
             if (this.listCursor && !this.listLoading) {
-                this.fetchList(false);
+                this.fetchComponentList(false);
             }
         }
     }
     
-    // Search handler
     onSearchChange(e) {
         this.search = e.detail.value || '';
         this.listCursor = null;
-        this.listItemsRaw = [];
-        this.fetchList(true);
+        this.componentList = [];
+        this.fetchComponentList(true);
     }
     
-    // Family filter handler
     async onFamilyChange(e) {
         this.family = e.detail.value;
         this.contributor = 'all';
-        this.selectedBaseName = null;
-        this.selectedComponentName = null;
-        this.versionOptions = [];
-        this.selectedVersion = null;
-        this.tlItems = [];
         this.listCursor = null;
-        this.listItemsRaw = [];
-        
+        this.componentList = [];
         await this.loadContributors();
-        this.fetchList(true);
+        this.fetchComponentList(true);
     }
     
-    // Contributor filter handler
     onContributorChange(e) {
         this.contributor = e.detail.value;
         this.listCursor = null;
-        this.listItemsRaw = [];
-        this.fetchList(true);
-        
-        // Refresh timeline if component selected
-        if (this.selectedBaseName && this.selectedVersion) {
-            this.loadTimeline(true);
-        }
+        this.componentList = [];
+        this.fetchComponentList(true);
     }
     
-    // Select component
-    async selectBase(e) {
+    // Select component → load versions → show version cards
+    async selectComponent(e) {
         this.selectedBaseName = e.currentTarget.dataset.basename;
         this.selectedType = e.currentTarget.dataset.type;
         this.selectedComponentName = e.currentTarget.dataset.name;
         
-        await this.loadVersions();
+        await this.loadVersionCards();
     }
     
-    // Load versions for selected component
-    async loadVersions() {
-        this.versionOptions = [];
-        this.selectedVersion = null;
-        this.tlItems = [];
-        this.tlIdSet.clear();
+    async loadVersionCards() {
+        this.versionCards = [];
         
         try {
             const versions = await getVersionsForBase({
@@ -184,31 +153,28 @@ export default class DeltavaultApp extends LightningElement {
                 omniType: this.selectedType || this.family
             });
             
-            this.versionOptions = (versions || []).map(v => ({
-                label: `v${v}`,
-                value: v
+            this.versionCards = (versions || []).map(v => ({
+                version: v,
+                label: `Version ${v}`
             }));
-            
-            if (this.versionOptions.length) {
-                this.selectedVersion = this.versionOptions[0].value;
-                this.loadTimeline(true);
-            } else {
-                this.tlItems = [];
-            }
         } catch(e) {
-            console.error('Error loading versions:', e);
+            console.error('loadVersionCards error:', e);
         }
     }
     
-    // Version change handler
-    async onVersionChange(e) {
-        this.selectedVersion = e.detail.value;
-        this.loadTimeline(true);
+    get showVersionCards() {
+        return this.selectedBaseName && this.versionCards.length > 0;
     }
     
-    // Load timeline snapshots
+    // === VERSION TIMELINE STAGE ===
+    async viewVersionHistory(e) {
+        this.selectedVersionForHistory = e.currentTarget.dataset.version;
+        this.currentStage = 'timeline';
+        await this.loadTimeline(true);
+    }
+    
     async loadTimeline(reset = false) {
-        if (!this.selectedBaseName || !this.selectedVersion) return;
+        if (!this.selectedBaseName || !this.selectedVersionForHistory) return;
         if (this.tlLoading) return;
         
         this.tlLoading = true;
@@ -217,50 +183,37 @@ export default class DeltavaultApp extends LightningElement {
             const page = await getSnapshotsForVersion({
                 baseName: this.selectedBaseName,
                 omniType: this.selectedType || this.family,
-                version: this.selectedVersion,
+                version: parseFloat(this.selectedVersionForHistory),
                 contributor: this.contributor,
-                pageSize: 20,
+                pageSize: 25,
                 cursor: reset ? null : this.tlCursor
             });
             
             const incoming = (page.items || [])
                 .map(x => ({
                     ...x,
-                    impacts: this.extractImpacts(x.diffText),
                     isExpanded: false,
-                    formattedDate: this.formatDate(x.at),
-                    // Parse AI notes to plain text for display
-                    aiNotesText: this.stripHtml(x.aiNotesHtml)
+                    formattedDate: this.formatDate(x.at)
                 }))
                 .filter(x => !this.tlIdSet.has(x.id));
             
             incoming.forEach(x => this.tlIdSet.add(x.id));
             
             if (reset) {
-                this.tlItems = [];
+                this.historyItems = [];
                 this.expandedSnapshots.clear();
             }
             
-            this.tlItems = [...this.tlItems, ...incoming];
+            this.historyItems = [...this.historyItems, ...incoming];
             this.tlCursor = page.nextCursor || null;
         } catch(e) {
-            console.error('Error loading timeline:', e);
+            console.error('loadTimeline error:', e);
         } finally {
             this.tlLoading = false;
         }
     }
     
-    // Strip HTML tags for safe display
-    stripHtml(html) {
-        if (!html) return '';
-        // Remove HTML tags and decode entities
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        return div.textContent || div.innerText || '';
-    }
-    
-    // Timeline scroll handler
-    handleTlScroll(e) {
+    handleTimelineScroll(e) {
         const el = e.currentTarget;
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
             if (this.tlCursor && !this.tlLoading) {
@@ -269,102 +222,88 @@ export default class DeltavaultApp extends LightningElement {
         }
     }
     
-    // Extract impact lines from diff
-    extractImpacts(diffText) {
-        if (!diffText) return [];
-        
-        const lines = diffText.split('\n');
-        const out = [];
-        
-        for (const ln of lines) {
-            if (!ln) continue;
-            
-            const interesting = 
-                ln.startsWith('+ Added Elements[') || 
-                ln.startsWith('~ Changed Elements[') || 
-                ln.startsWith('- Removed Elements[') ||
-                ln.startsWith('+ Added childPayload') || 
-                ln.startsWith('~ Changed childPayload') || 
-                ln.startsWith('- Removed childPayload') ||
-                ln.includes('PropertySetConfig.elements[');
-            
-            if (interesting) {
-                out.push(ln.trim());
-                if (out.length >= 12) break;
-            }
-        }
-        
-        return out;
-    }
-    
-    // Format date
     formatDate(dateValue) {
         if (!dateValue) return '';
         const d = new Date(dateValue);
         return d.toLocaleString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit'
+            year: 'numeric', month: 'short', day: '2-digit',
+            hour: '2-digit', minute: '2-digit'
         });
     }
     
-    // Toggle snapshot expansion
     toggleSnapshot(e) {
         const id = e.currentTarget.dataset.id;
-        const item = this.tlItems.find(x => x.id === id);
+        const item = this.historyItems.find(x => x.id === id);
         if (item) {
             item.isExpanded = !item.isExpanded;
-            this.tlItems = [...this.tlItems]; // Trigger reactivity
+            this.historyItems = [...this.historyItems];
         }
     }
     
-    // Copy diff to clipboard
+    get expandLabel() {
+        return 'View Details';
+    }
+    
     copyDiff(e) {
         const id = e.currentTarget.dataset.id;
-        const item = this.tlItems.find(x => x.id === id);
+        const item = this.historyItems.find(x => x.id === id);
         if (item && item.diffText) {
             navigator.clipboard.writeText(item.diffText);
         }
     }
     
-    // Copy JSON to clipboard
     copyJson(e) {
         const id = e.currentTarget.dataset.id;
-        const item = this.tlItems.find(x => x.id === id);
+        const item = this.historyItems.find(x => x.id === id);
         if (item && item.rawJson) {
             navigator.clipboard.writeText(item.rawJson);
         }
     }
     
-    // Admin actions
+    backToSelector() {
+        this.currentStage = 'selector';
+        this.selectedBaseName = null;
+        this.selectedType = null;
+        this.selectedComponentName = null;
+        this.versionCards = [];
+        this.selectedVersionForHistory = null;
+        this.historyItems = [];
+        this.tlIdSet.clear();
+    }
+    
+    backToVersions() {
+        this.currentStage = 'selector';
+        this.selectedVersionForHistory = null;
+        this.historyItems = [];
+        this.tlIdSet.clear();
+    }
+    
+    // === ADMIN ===
     toggleAdminPanel() {
         this.showAdminPanel = !this.showAdminPanel;
     }
     
     async trackAndIngestBase() {
         if (!this.selectedBaseName) return;
-        
         try {
             await trackAndIngestBase({
                 family: this.selectedType || this.family,
                 baseName: this.selectedBaseName
             });
-            await this.loadVersions();
+            await this.loadVersionCards();
         } catch(e) {
-            console.error('Error ingesting:', e);
+            console.error('trackAndIngestBase error:', e);
         }
     }
     
     async runPollerNow() {
         try {
             await runPollerNowApex({ lookbackMinutes: 60 });
-            if (this.selectedBaseName && this.selectedVersion) {
+            if (this.selectedBaseName && this.selectedVersionForHistory) {
                 await this.loadTimeline(true);
             }
         } catch(e) {
-            console.error('Error running poller:', e);
+            console.error('runPollerNow error:', e);
         }
     }
     
@@ -372,7 +311,7 @@ export default class DeltavaultApp extends LightningElement {
         try {
             await startSchedulerApex({ everyMinutes: 5 });
         } catch(e) {
-            console.error('Error starting scheduler:', e);
+            console.error('startScheduler error:', e);
         }
     }
     
@@ -380,7 +319,7 @@ export default class DeltavaultApp extends LightningElement {
         try {
             await stopSchedulerApex();
         } catch(e) {
-            console.error('Error stopping scheduler:', e);
+            console.error('stopScheduler error:', e);
         }
     }
 }

@@ -245,6 +245,38 @@ export default class DeltavaultApp extends LightningElement {
             }
         }
     }
+        async loadVersionCards() {
+        this.versionCards = [];
+        this.statusText = 'Loading versions...';
+        
+        console.log('loadVersionCards called for:', this.selectedBaseName, this.selectedType);
+        
+        try {
+            const versions = await getVersionsForBase({
+                baseName: this.selectedBaseName,
+                omniType: this.selectedType
+            });
+            
+            console.log('Versions returned:', versions);
+            
+            if (!versions || versions.length === 0) {
+                console.warn('No versions found for', this.selectedBaseName);
+                this.statusText = 'No versions found';
+                return;
+            }
+            
+            this.versionCards = (versions || []).map(v => ({
+                version: v,
+                label: `v${v}`
+            }));
+            
+            this.statusText = 'Ready';
+            console.log('Version cards created:', this.versionCards.length);
+        } catch(e) {
+            console.error('loadVersionCards error:', e);
+            this.statusText = 'Error loading versions: ' + e.body?.message || e.message;
+        }
+    }
     
     // === TABS ===
     switchTab(e) {

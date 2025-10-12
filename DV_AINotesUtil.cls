@@ -66,14 +66,19 @@ public with sharing class DV_AINotesUtil {
     // --- AI notes: OmniStudio ---
     public static String aiNotes(String componentName, String diff, String rawJson) {
         String prompt =
-            'You are a senior Salesforce OmniStudio reviewer. Based on the DIFF and RAW JSON, ' +
-            'produce concise release-notes style HTML for developers. ' +
+            'You are a senior Salesforce OmniStudio reviewer analyzing changes to an OmniScript/FlexCard/DataRaptor component. ' +
+            'Based on the DIFF and RAW JSON provided, produce concise, actionable release notes in HTML format. ' +
+            'Focus on WHAT changed and WHY it matters to developers. Be specific about element names, steps, and fields. ' +
             'Use only these tags: <p>, <ul>, <li>, <strong>, <code>. ' +
-            'Sections: Summary, Impact, Risks, Test Ideas. Keep under 180 words.\n\n' +
-            'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff) +
+            'Structure your response with these sections:\n' +
+            '• Summary: Brief description of the change (1-2 sentences)\n' +
+            '• Impact: How this affects behavior, data flow, or user experience\n' +
+            '• Risks: Potential issues or areas to watch (regressions, breaking changes)\n' +
+            '• Test Ideas: Specific test scenarios to validate the change\n\n' +
+            'Keep the entire response under 180 words. Be direct and technical.\n\n' +
+            'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff.left(12000)) +
             '\n\n=== RAW JSON (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
 
-        // NOTE: this uses the key you provided in your code; keep it as-is or move to Named Credential.
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                           'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
         Map<String,Object> payload = new Map<String,Object>{
@@ -95,14 +100,20 @@ public with sharing class DV_AINotesUtil {
                 String parsed = parseGeminiHtml(res.getBody());
                 if(!String.isBlank(parsed)) html = cleanForUi(parsed);
             }
-        } catch(Exception e){}
+        } catch(Exception e){
+            System.debug('AI Notes error: ' + e.getMessage());
+        }
 
+        // Always append element-level impacts at the end
         String elemBullets = elementImpactBullets(diff);
         if(!String.isBlank(html)) return html + elemBullets;
 
-        // fallback if callout fails
+        // Fallback if callout fails - still show element impacts
         Integer adds=0, dels=0;
-        for(String line : splitLines(diff)){ if(line!=null && line.startsWith('+ ')) adds++; else if(line!=null && line.startsWith('- ')) dels++; }
+        for(String line : splitLines(diff)){ 
+            if(line!=null && line.startsWith('+ ')) adds++; 
+            else if(line!=null && line.startsWith('- ')) dels++; 
+        }
         return '<p><strong>Summary:</strong> Updated <code>' + enc(componentName) + '</code> with ' + adds + ' additions and ' + dels + ' removals.</p>' +
                '<ul><li><strong>Impact:</strong> Behavior may change in affected branches.</li>' +
                '<li><strong>Risks:</strong> Data mapping / element flow regressions.</li>' +
@@ -112,19 +123,51 @@ public with sharing class DV_AINotesUtil {
     private static String elementImpactBullets(String diff) {
         if (String.isBlank(diff)) return '';
         List<String> pts = new List<String>();
+        
         for (String line : diff.split('\n')) {
             if (line == null) continue;
+            
+            // Detect element-level changes - GENERIC approach
             Boolean interesting =
-                line.startsWith('+ Added Elements[') || line.startsWith('~ Changed Elements[') || line.startsWith('- Removed Elements[') ||
-                line.startsWith('+ Added childPayload') || line.startsWith('~ Changed childPayload') || line.startsWith('- Removed childPayload') ||
-                line.contains('PropertySetConfig.elements[');
+                // Any element array operations
+                line.contains('Elements[') ||
+                line.contains('elements[') ||
+                // Child payload changes (any child element)
+                line.contains('childPayload') ||
+                // PropertySetConfig element changes
+                line.contains('PropertySetConfig.elements') ||
+                line.contains('PropertySetConfig.children') ||
+                // Step references
+                line.contains('Step') && (line.contains('ParentElementName') || line.contains('SequenceNumber')) ||
+                // Element metadata
+                line.contains('ParentElementName') ||
+                line.contains('SequenceNumber') ||
+                line.contains('Level') ||
+                // Type/name changes for any element
+                (line.contains('.type') || line.contains('.name') || line.contains('.label')) &&
+                (line.contains('Added') || line.contains('Changed') || line.contains('Removed'));
+            
             if (interesting) {
-                String s = line.replace('childPayload.', '');
-                pts.add('<li>' + enc(s) + '</li>');
-                if (pts.size() >= 10) break;
+                // Clean up the line for display
+                String cleaned = line
+                    .replace('childPayload.', '')
+                    .replace('PropertySetConfig.', '')
+                    .replace('elements[', 'Element [')
+                    .replace('].', '] → ');
+                
+                // Truncate very long lines
+                if (cleaned.length() > 200) {
+                    cleaned = cleaned.substring(0, 197) + '...';
+                }
+                
+                pts.add('<li>' + enc(cleaned) + '</li>');
+                if (pts.size() >= 15) break; // Show up to 15 element impacts
             }
         }
-        return pts.isEmpty() ? '' : '<ul><li><strong>Element Impacts:</strong></li>' + String.join(pts, '') + '</ul>';
+        
+        if (pts.isEmpty()) return '';
+        
+        return '<ul><li><strong>Element Impacts:</strong></li>' + String.join(pts, '') + '</ul>';
     }
 
     // --- AI notes for Apex (kept) ---

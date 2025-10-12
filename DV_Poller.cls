@@ -1,6 +1,8 @@
 public with sharing class DV_Poller implements Schedulable {
     
     private static final Integer DEFAULT_LOOKBACK_MINUTES = 20;
+    private static final Integer MAX_DIFF_LENGTH = 30000; // Safe limit for Long Text Area
+    private static final Integer MAX_JSON_LENGTH = 30000; // Safe limit for RawJSON
     
     public void execute(SchedulableContext sc) {
         runSince(System.now().addMinutes(-DEFAULT_LOOKBACK_MINUTES));
@@ -12,9 +14,12 @@ public with sharing class DV_Poller implements Schedulable {
     }
     
     private static void runSince(Datetime since) {
+        // Process parent objects
         processParent('OmniUiCard', since);
         processParent('OmniProcess', since);
         processParent('OmniDataTransform', since);
+        
+        // Process child elements - CRITICAL for element-level tracking
         processChild('OmniProcessElement', 'OmniProcessId', 'OmniProcess', 'Element', since);
         processChild('OmniDataTransformItem', 'OmniDataTransformationId', 'OmniDataTransform', 'DR Map Item', since);
     }
@@ -45,7 +50,7 @@ public with sharing class DV_Poller implements Schedulable {
             
             OmniComponent__c oc = new OmniComponent__c();
             oc.FullName__c = full;
-            oc.BaseName__c = base; // KEY: Set BaseName
+            oc.BaseName__c = base;
             oc.OmniType__c = String.valueOf(t);
             oc.LastSeenModified__c = nowTs;
             
@@ -103,7 +108,7 @@ public with sharing class DV_Poller implements Schedulable {
             
             OmniComponent__c oc = new OmniComponent__c();
             oc.FullName__c = full;
-            oc.BaseName__c = base; // KEY: Set BaseName
+            oc.BaseName__c = base;
             oc.OmniType__c = String.valueOf(t);
             oc.LastSeenModified__c = nowTs;
             
@@ -115,6 +120,24 @@ public with sharing class DV_Poller implements Schedulable {
         }
         
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', childTag, childNameBy);
+    }
+    
+    // FIXED: Truncate diffs that are too large
+    private static String truncateDiff(String diff) {
+        if (String.isBlank(diff)) return diff;
+        if (diff.length() <= MAX_DIFF_LENGTH) return diff;
+        
+        return diff.substring(0, MAX_DIFF_LENGTH) + 
+               '\n\n... [TRUNCATED - diff too large, ' + diff.length() + ' chars total]';
+    }
+    
+    // FIXED: Truncate raw JSON that's too large
+    private static String truncateRawJson(String rawJson) {
+        if (String.isBlank(rawJson)) return rawJson;
+        if (rawJson.length() <= MAX_JSON_LENGTH) return rawJson;
+        
+        return rawJson.substring(0, MAX_JSON_LENGTH) + 
+               '\n... [TRUNCATED - JSON too large, ' + rawJson.length() + ' chars total]';
     }
     
     // Upsert components and create snapshots with version awareness
@@ -174,7 +197,7 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        // Create snapshots only when diff exists
+        // Create snapshots - ALWAYS create for baseline ingestion
         List<OmniSnapshot__c> toInsert = new List<OmniSnapshot__c>();
         
         for (String fn : nameToId.keySet()) {
@@ -187,21 +210,30 @@ public with sharing class DV_Poller implements Schedulable {
             String diffKey = nameToId.get(fn) + '|' + versionKey;
             String prev = prevRawByKey.get(diffKey);
             
+            // Calculate diff
             String diff = DV_AINotesUtil.deepDiff(
                 String.isBlank(prev) ? '{}' : prev,
                 prettyAfter
             );
             
-            if (String.isBlank(diff)) continue;
+            // FIXED: Always create snapshot for baseline, but skip if no changes for ongoing polling
+            Boolean isBaseline = (actor == 'Baseline' || actor == 'Manual Baseline');
+            if (!isBaseline && String.isBlank(diff)) {
+                continue; // Skip if no changes during regular polling
+            }
+            
+            // FIXED: Truncate both diff and raw JSON if too large
+            String safeDiff = truncateDiff(diff);
+            String safeRawJson = truncateRawJson(JSON.serialize(afterM));
             
             OmniSnapshot__c snap = new OmniSnapshot__c();
             snap.OmniComponent__c = nameToId.get(fn);
             snap.ModifiedAt__c = nowTs;
             snap.ActorName__c = actor;
             snap.ChangeType__c = String.isBlank(prev) ? 'Insert' : 'Update';
-            snap.RawJSON__c = JSON.serialize(afterM);
-            snap.DiffToPrev__c = diff;
-            snap.BaseName__c = base; // KEY: Set BaseName
+            snap.RawJSON__c = safeRawJson;
+            snap.DiffToPrev__c = String.isBlank(safeDiff) ? 'Initial baseline snapshot' : safeDiff;
+            snap.BaseName__c = base;
             
             if (v != null) {
                 snap.Version__c = v;
@@ -212,7 +244,7 @@ public with sharing class DV_Poller implements Schedulable {
                 String cn = childNameBy != null ? childNameBy.get(fn) : null;
                 snap.Source__c = 'Child: ' + childTag + (String.isBlank(cn) ? '' : ' • ' + cn);
             } else {
-                snap.Source__c = 'Poller';
+                snap.Source__c = isBaseline ? actor : 'Poller';
             }
             
             toInsert.add(snap);

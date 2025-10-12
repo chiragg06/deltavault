@@ -1,5 +1,10 @@
 public with sharing class DV_Util {
 
+    private static final Integer PROPERTY_CONFIG_MAX = 100000;
+    private static final Integer DATA_SOURCE_MAX = 100000;
+    private static final Integer STYLING_MAX = 100000;
+    private static final Integer SAMPLE_DATA_MAX = 50000;
+
     // ---- Type mapping -------------------------------------------------------
     public static DV_Constants.CompType mapType(SObject rec) {
         String api = rec.getSObjectType().getDescribe().getName();
@@ -52,14 +57,18 @@ public with sharing class DV_Util {
             Object u = JSON.deserializeUntyped(maybeJson);
             Object sorted = sortJson(u);
             String pretty = JSON.serializePretty(sorted);
-            if (max != null && pretty.length() > max) return pretty.substring(0, max) + '\n... [truncated]';
+            if (max != null && pretty.length() > max) {
+                return pretty.substring(0, max) + '\n... [TRUNCATED - ' + pretty.length() + ' chars total]';
+            }
             return pretty;
         } catch (Exception ex) {
-            return (max != null && maybeJson.length() > max)
-                ? maybeJson.substring(0, max) + '\n... [truncated]'
-                : maybeJson;
+            if (max != null && maybeJson.length() > max) {
+                return maybeJson.substring(0, max) + '\n... [TRUNCATED - ' + maybeJson.length() + ' chars total]';
+            }
+            return maybeJson;
         }
     }
+    
     private static Object sortJson(Object val) {
         if (val instanceof Map<String,Object>) {
             Map<String,Object> m = (Map<String,Object>)val;
@@ -90,10 +99,10 @@ public with sharing class DV_Util {
         putIfPresent(rec,f,m,'Language');
 
         if (api == 'OmniUiCard') {
-            normIfPresent(rec,f,m,'PropertySetConfig',130000);
-            normIfPresent(rec,f,m,'DataSourceConfig',130000);
-            normIfPresent(rec,f,m,'StylingConfiguration',130000);
-            normIfPresent(rec,f,m,'SampleDataSourceResponse',60000);
+            normIfPresent(rec,f,m,'PropertySetConfig', PROPERTY_CONFIG_MAX);
+            normIfPresent(rec,f,m,'DataSourceConfig', DATA_SOURCE_MAX);
+            normIfPresent(rec,f,m,'StylingConfiguration', STYLING_MAX);
+            normIfPresent(rec,f,m,'SampleDataSourceResponse', SAMPLE_DATA_MAX);
         } else if (api == 'OmniProcess') {
             normIfPresent(rec,f,m,'IntegrationProcedureInput',60000);
             normIfPresent(rec,f,m,'IntegrationProcedureOutput',60000);

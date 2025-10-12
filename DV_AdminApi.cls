@@ -7,31 +7,49 @@ public with sharing class DV_AdminApi {
 
     @AuraEnabled
     public static String startScheduler(Integer everyMinutes) {
-        if (everyMinutes == null || everyMinutes < 1)  everyMinutes = 10;
-        if (everyMinutes > 60)                         everyMinutes = 60;
+        if (everyMinutes == null || everyMinutes < 1)  everyMinutes = 30;
         
         stopScheduler();
         
-        // Build CRON expression for every N minutes
-        // Format: Seconds Minutes Hours Day Month Weekday Year
-        // Example: 0 0,10,20,30,40,50 * * * ? (every 10 minutes)
+        // Salesforce CRON limitations:
+        // - Can only schedule at ONE specific minute per hour
+        // - Cannot use comma-separated values like "0,30"
+        // - For "every 30 minutes", we need to schedule multiple jobs
         
-        List<String> mins = new List<String>();
-        for (Integer m = 0; m < 60; m += everyMinutes) {
-            mins.add(String.valueOf(m));
+        String jobName = 'DeltaVault Poller';
+        
+        if (everyMinutes <= 30) {
+            // For 30 minutes or less, schedule multiple jobs at different minutes
+            Integer jobCount = 60 / everyMinutes;
+            
+            for (Integer i = 0; i < jobCount; i++) {
+                Integer minute = i * everyMinutes;
+                
+                // CRON format: Seconds Minutes Hours Day Month Weekday
+                // Run at specific minute every hour
+                String cron = '0 ' + minute + ' * * * ?';
+                String uniqueJobName = jobName + (i > 0 ? ' ' + i : '');
+                
+                System.debug('Scheduling: ' + uniqueJobName + ' with CRON: ' + cron);
+                System.schedule(uniqueJobName, cron, new DV_Poller());
+            }
+            
+            return jobCount + ' jobs scheduled (every ' + everyMinutes + ' minutes)';
+        } else {
+            // For longer intervals, just schedule once per hour
+            String cron = '0 0 * * * ?'; // Every hour at minute 0
+            System.debug('Scheduling with CRON: ' + cron);
+            return System.schedule(jobName, cron, new DV_Poller());
         }
-        
-        // CRON: second minute hour day month weekday
-        String cron = '0 ' + String.join(mins, ',') + ' * * * ?';
-        
-        System.debug('Starting scheduler with CRON: ' + cron);
-        
-        return System.schedule('DeltaVault Poller', cron, new DV_Poller());
     }
 
     @AuraEnabled
     public static void stopScheduler() {
-        for (CronTrigger ct : [SELECT Id FROM CronTrigger WHERE CronJobDetail.Name = 'DeltaVault Poller']) {
+        // Stop all DeltaVault Poller jobs (including numbered variants)
+        for (CronTrigger ct : [
+            SELECT Id FROM CronTrigger 
+            WHERE CronJobDetail.Name LIKE 'DeltaVault Poller%'
+        ]) {
             System.abortJob(ct.Id);
         }
     }

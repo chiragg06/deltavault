@@ -67,15 +67,22 @@ public with sharing class DV_AINotesUtil {
     public static String aiNotes(String componentName, String diff, String rawJson) {
         String prompt =
             'You are a senior Salesforce OmniStudio reviewer analyzing changes to an OmniScript/FlexCard/DataRaptor component. ' +
-            'Based on the DIFF and RAW JSON provided, produce concise, actionable release notes in HTML format. ' +
-            'Focus on WHAT changed and WHY it matters to developers. Be specific about element names, steps, and fields. ' +
+            'Based on the DIFF provided, produce concise, actionable release notes in HTML format. ' +
+            'CRITICAL: For element-level changes, identify:\n' +
+            '1. WHICH step contains the element (e.g., "Step1", "Step2")\n' +
+            '2. WHICH element changed (e.g., "Time1", "Text2", "Checkbox3")\n' +
+            '3. WHAT the element does (e.g., "collects appointment time", "captures customer name")\n' +
+            '4. HOW this impacts the USER (e.g., "users can no longer select a time", "validation is now stricter")\n' +
+            '5. WHAT business process is affected (e.g., "appointment booking flow", "address update process")\n\n' +
+            'Example: "Removed Time1 element from Step1 (Appointment Details). Users can no longer select appointment times during onboarding. ' +
+            'This may require updating the downstream scheduling system."\n\n' +
             'Use only these tags: <p>, <ul>, <li>, <strong>, <code>. ' +
-            'Structure your response with these sections:\n' +
-            '• Summary: Brief description of the change (1-2 sentences)\n' +
-            '• Impact: How this affects behavior, data flow, or user experience\n' +
-            '• Risks: Potential issues or areas to watch (regressions, breaking changes)\n' +
-            '• Test Ideas: Specific test scenarios to validate the change\n\n' +
-            'Keep the entire response under 180 words. Be direct and technical.\n\n' +
+            'Structure your response:\n' +
+            '• Summary: What changed (step + element names)\n' +
+            '• Impact: Functional changes to user experience and data flow\n' +
+            '• Risks: Breaking changes, data integrity issues\n' +
+            '• Test Ideas: Specific scenarios to validate\n\n' +
+            'Keep under 200 words. Be specific about steps and elements.\n\n' +
             'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff.left(12000)) +
             '\n\n=== RAW JSON (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
 
@@ -122,7 +129,9 @@ public with sharing class DV_AINotesUtil {
 
     private static String elementImpactBullets(String diff) {
         if (String.isBlank(diff)) return '';
-        List<String> pts = new List<String>();
+        
+        // Extract element changes and generate AI summary
+        List<String> elementChanges = new List<String>();
         
         for (String line : diff.split('\n')) {
             if (line == null) continue;
@@ -148,26 +157,83 @@ public with sharing class DV_AINotesUtil {
                 (line.contains('Added') || line.contains('Changed') || line.contains('Removed'));
             
             if (interesting) {
-                // Clean up the line for display
-                String cleaned = line
-                    .replace('childPayload.', '')
-                    .replace('PropertySetConfig.', '')
-                    .replace('elements[', 'Element [')
-                    .replace('].', '] → ');
-                
-                // Truncate very long lines
-                if (cleaned.length() > 200) {
-                    cleaned = cleaned.substring(0, 197) + '...';
-                }
-                
-                pts.add('<li>' + enc(cleaned) + '</li>');
-                if (pts.size() >= 15) break; // Show up to 15 element impacts
+                elementChanges.add(line);
             }
         }
         
-        if (pts.isEmpty()) return '';
+        if (elementChanges.isEmpty()) return '';
+        
+        // Generate AI functional impact summary
+        String impactSummary = generateElementImpactSummary(elementChanges);
+        
+        if (!String.isBlank(impactSummary)) {
+            return '<ul><li><strong>Element Impacts:</strong></li><li>' + impactSummary + '</li></ul>';
+        }
+        
+        // Fallback: show raw changes if AI fails
+        List<String> pts = new List<String>();
+        for (String line : elementChanges) {
+            String cleaned = line
+                .replace('childPayload.', '')
+                .replace('PropertySetConfig.', '')
+                .replace('elements[', 'Element [')
+                .replace('].', '] → ');
+            
+            if (cleaned.length() > 200) {
+                cleaned = cleaned.substring(0, 197) + '...';
+            }
+            
+            pts.add('<li>' + enc(cleaned) + '</li>');
+            if (pts.size() >= 15) break;
+        }
         
         return '<ul><li><strong>Element Impacts:</strong></li>' + String.join(pts, '') + '</ul>';
+    }
+    
+    private static String generateElementImpactSummary(List<String> elementChanges) {
+        if (elementChanges.isEmpty()) return '';
+        
+        // Build concise summary for AI
+        String changesText = String.join(elementChanges, '\n').left(3000);
+        
+        String prompt = 
+            'Analyze these OmniScript/FlexCard element changes and explain the FUNCTIONAL IMPACT in 2-3 sentences. ' +
+            'Focus on: WHICH step/element changed, WHAT functionality is affected, HOW users will experience this. ' +
+            'Be specific about element names and steps. Output plain text only, no HTML tags.\n\n' +
+            'Changes:\n' + changesText;
+        
+        try {
+            String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
+                              'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
+            Map<String,Object> payload = new Map<String,Object>{
+                'contents' => new List<Object>{
+                    new Map<String,Object>{
+                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
+                    }
+                }
+            };
+            
+            HttpRequest req = new HttpRequest();
+            req.setMethod('POST');
+            req.setEndpoint(endpoint);
+            req.setHeader('Content-Type','application/json');
+            req.setTimeout(60000);
+            req.setBody(JSON.serialize(payload));
+            
+            Http http = new Http();
+            HttpResponse res = http.send(req);
+            
+            if (res.getStatusCode() == 200) {
+                String parsed = parseGeminiHtml(res.getBody());
+                if (!String.isBlank(parsed)) {
+                    return enc(parsed.trim());
+                }
+            }
+        } catch (Exception e) {
+            System.debug('Element impact AI generation failed: ' + e.getMessage());
+        }
+        
+        return null;
     }
 
     // --- AI notes for Apex (kept) ---

@@ -44,10 +44,21 @@ public with sharing class DV_Util {
         return null;
     }
 
-    // Strip trailing " vN" or " vN.M"
+    // Strip trailing " vN" or " vN.M" OR "_N" for OmniScripts
     public static String stripVersion(String full) {
         if (String.isBlank(full)) return '';
-        return full.trim().replaceAll('\\s+v[0-9]+(\\.[0-9]+)?$','');
+        
+        // Handle OmniScript pattern: "name_1", "name_2", etc.
+        // Also handle: "name v1", "name v2", etc.
+        String result = full.trim();
+        
+        // Pattern 1: "_N" at the end (OmniScript: test_version_English_1)
+        result = result.replaceAll('_\\d+$', '');
+        
+        // Pattern 2: " vN" or " vN.M" at the end
+        result = result.replaceAll('\\s+v\\d+(?:\\.\\d+)?$', '');
+        
+        return result;
     }
 
     // ---- JSON helpers -------------------------------------------------------
@@ -117,12 +128,24 @@ public with sharing class DV_Util {
             normIfPresent(rec,f,m,'ExpectedInputJson',90000);
             normIfPresent(rec,f,m,'ExpectedOutputJson',90000);
         } else if (api == 'OmniDataTransformItem') {
-            putIfPresent(rec,f,m,'FormulaExpression'); putIfPresent(rec,f,m,'FormulaResultPath');
+            putIfPresent(rec,f,m,'FormulaExpression'); 
+            putIfPresent(rec,f,m,'FormulaResultPath');
+            putIfPresent(rec,f,m,'OutputObjectName'); 
+            putIfPresent(rec,f,m,'OutputFieldName');
+            putIfPresent(rec,f,m,'InputObjectName');  
+            putIfPresent(rec,f,m,'InputFieldName');
+            putIfPresent(rec,f,m,'LookupObjectName'); 
+            putIfPresent(rec,f,m,'LookupByFieldName'); 
+            putIfPresent(rec,f,m,'LookupReturnedFieldName');
+            putIfPresent(rec,f,m,'FilterGroup');
+            putIfPresent(rec,f,m,'FilterOperator');
+            putIfPresent(rec,f,m,'IsDisabled');
+            putIfPresent(rec,f,m,'IsRequired');
+            putIfPresent(rec,f,m,'GlobalKey');
             normIfPresent(rec,f,m,'DefaultValue',20000);
             normIfPresent(rec,f,m,'InputFieldName',20000);
-            putIfPresent(rec,f,m,'OutputObjectName'); putIfPresent(rec,f,m,'OutputFieldName');
-            putIfPresent(rec,f,m,'InputObjectName');  putIfPresent(rec,f,m,'InputFieldName');
-            putIfPresent(rec,f,m,'LookupObjectName'); putIfPresent(rec,f,m,'LookupByFieldName'); putIfPresent(rec,f,m,'LookupReturnedFieldName');
+            normIfPresent(rec,f,m,'TransformValueDefaultValue',20000);
+            normIfPresent(rec,f,m,'TransformValueFormulaExpression',20000);
         }
         return m;
     }
@@ -177,7 +200,12 @@ public with sharing class DV_Util {
             'IntegrationProcedureInput','IntegrationProcedureOutput','CustomJavaScript','CustomHtmlTemplates','Language',
             'ExpectedInputJson','ExpectedOutputJson','InputType','OutputType','GlobalKey',
             'FormulaExpression','FormulaResultPath','DefaultValue','InputFieldName','ParentElementName','SequenceNumber','Level',
-            'OmniProcessId','OmniDataTransformationId'
+            'OmniProcessId','OmniDataTransformationId',
+            // DataRaptor Item fields
+            'OutputObjectName','OutputFieldName','InputObjectName',
+            'LookupObjectName','LookupByFieldName','LookupReturnedFieldName',
+            'FilterGroup','FilterOperator','IsDisabled','IsRequired',
+            'TransformValueDefaultValue','TransformValueFormulaExpression'
         };
         for (String f : wanted) if (fmap.containsKey(f) && order.indexOf(f) < 0) order.add(f);
         return String.join(order, ',');

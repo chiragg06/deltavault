@@ -2,75 +2,77 @@ import { LightningElement, track } from 'lwc';
 import getComponentsPage from '@salesforce/apex/DV_VaultApi.getComponentsPage';
 import getVersionsForBase from '@salesforce/apex/DV_VaultApi.getVersionsForBase';
 import getSnapshotsForVersion from '@salesforce/apex/DV_VaultApi.getSnapshotsForVersion';
-import getContributors from '@salesforce/apex/DV_VaultApi.getContributors';
-import trackAndIngestBase from '@salesforce/apex/DV_AdminApi.trackAndIngestBase';
-import runPollerNowApex from '@salesforce/apex/DV_AdminApi.runPollerNow';
-import startSchedulerApex from '@salesforce/apex/DV_AdminApi.startScheduler';
-import stopSchedulerApex from '@salesforce/apex/DV_AdminApi.stopScheduler';
+import vaultIcon from '@salesforce/resourceUrl/vault_icon';
 
 export default class DeltavaultApp extends LightningElement {
-    // Stage control: 'door' → 'selector' → 'timeline'
-    @track currentStage = 'door';
+    // Stage: 'entry' → 'home' → 'vault'
+    @track currentStage = 'entry';
+    
+    // Static resource
+    vaultIconUrl = vaultIcon;
+    iconError = false;
     
     // Filters
     family = 'OmniProcess';
-    contributor = 'all';
     search = '';
     
-    familyOptions = [
-        { label: 'OmniScripts', value: 'OmniProcess' },
-        { label: 'FlexCards', value: 'Flexcard' },
-        { label: 'DataRaptors', value: 'DataMapper' }
-    ];
-    
-    @track contributorOptions = [];
+    // Component list (deduplicated by BaseName)
     @track componentList = [];
     listCursor = null;
     listLoading = false;
     
-    // Selection state
+    // Selected component
     selectedBaseName = null;
     selectedType = null;
     selectedComponentName = null;
     
+    // Version cards for right panel
     @track versionCards = [];
-    selectedVersionForHistory = null;
     
-    // Timeline
+    // Selected version for history view
+    selectedVersion = null;
+    
+    // History/Timeline
     @track historyItems = [];
     tlCursor = null;
     tlLoading = false;
-    tlIdSet = new Set();
     
-    // View states
-    showAdminPanel = false;
-    expandedSnapshots = new Set();
+    // Active tab: 'notes' | 'diff' | 'raw' | 'timeline'
+    @track activeTab = 'notes';
+    
+    // Status
+    @track statusText = 'Ready';
+    
+    // Expanded snapshots
+    expandedSet = new Set();
     
     connectedCallback() {
-        this.loadContributors();
+        // Start on entry screen
     }
     
     // === STAGE GETTERS ===
-    get isDoorStage() { return this.currentStage === 'door'; }
-    get isSelectorStage() { return this.currentStage === 'selector'; }
-    get isTimelineStage() { return this.currentStage === 'timeline'; }
+    get isEntryStage() { return this.currentStage === 'entry'; }
+    get isHomeStage() { return this.currentStage === 'home'; }
+    get isVaultStage() { return this.currentStage === 'vault'; }
     
-    // === DOOR STAGE ===
+    handleIconError() {
+        this.iconError = true;
+        this.vaultIconUrl = null;
+    }
+    
+    // === ENTRY STAGE ===
     enterVault() {
-        this.currentStage = 'selector';
+        this.currentStage = 'home';
+    }
+    
+    // === HOME STAGE ===
+    selectFamily(e) {
+        this.family = e.currentTarget.dataset.family;
+        this.currentStage = 'vault';
         this.fetchComponentList(true);
     }
     
-    // === COMPONENT SELECTOR STAGE ===
-    async loadContributors() {
-        try {
-            const result = await getContributors({ family: this.family });
-            this.contributorOptions = result || [];
-        } catch(e) {
-            console.error('loadContributors error:', e);
-        }
-    }
-    
+    // === VAULT STAGE ===
     async fetchComponentList(reset = false) {
         if (this.listLoading) return;
         this.listLoading = true;
@@ -78,34 +80,42 @@ export default class DeltavaultApp extends LightningElement {
         try {
             const page = await getComponentsPage({
                 family: this.family,
-                contributor: this.contributor,
+                contributor: 'all',
                 search: this.search,
                 pageSize: 50,
                 cursor: reset ? null : this.listCursor
             });
             
-            if (reset) this.componentList = [];
+            if (reset) {
+                this.componentList = [];
+            }
+            
             this.componentList = [...this.componentList, ...(page.items || [])];
             this.listCursor = page.nextCursor || null;
+            this.statusText = 'Ready';
         } catch(e) {
             console.error('fetchComponentList error:', e);
+            this.statusText = 'Error loading components';
         } finally {
             this.listLoading = false;
         }
     }
     
-    get dedupedComponents() {
+    // Get unique components (deduplicated by BaseName)
+    get uniqueComponents() {
         const map = new Map();
-        for (const r of this.componentList) {
-            const key = r.baseName || r.name;
-            if (!map.has(key)) map.set(key, r);
+        for (const comp of this.componentList) {
+            const key = comp.baseName;
+            if (!map.has(key)) {
+                map.set(key, comp);
+            }
         }
         return Array.from(map.values());
     }
     
     handleListScroll(e) {
         const el = e.currentTarget;
-        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 32) {
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
             if (this.listCursor && !this.listLoading) {
                 this.fetchComponentList(false);
             }
@@ -115,31 +125,19 @@ export default class DeltavaultApp extends LightningElement {
     onSearchChange(e) {
         this.search = e.detail.value || '';
         this.listCursor = null;
-        this.componentList = [];
         this.fetchComponentList(true);
     }
     
-    async onFamilyChange(e) {
-        this.family = e.detail.value;
-        this.contributor = 'all';
-        this.listCursor = null;
-        this.componentList = [];
-        await this.loadContributors();
-        this.fetchComponentList(true);
-    }
-    
-    onContributorChange(e) {
-        this.contributor = e.detail.value;
-        this.listCursor = null;
-        this.componentList = [];
-        this.fetchComponentList(true);
-    }
-    
-    // Select component → load versions → show version cards
     async selectComponent(e) {
         this.selectedBaseName = e.currentTarget.dataset.basename;
         this.selectedType = e.currentTarget.dataset.type;
-        this.selectedComponentName = e.currentTarget.dataset.name;
+        this.selectedComponentName = e.currentTarget.dataset.basename;
+        
+        // Clear previous selection
+        this.selectedVersion = null;
+        this.historyItems = [];
+        this.versionCards = [];
+        this.activeTab = 'notes';
         
         await this.loadVersionCards();
     }
@@ -150,98 +148,132 @@ export default class DeltavaultApp extends LightningElement {
         try {
             const versions = await getVersionsForBase({
                 baseName: this.selectedBaseName,
-                omniType: this.selectedType || this.family
+                omniType: this.selectedType
             });
             
             this.versionCards = (versions || []).map(v => ({
                 version: v,
-                label: `Version ${v}`
+                label: `v${v}`
             }));
         } catch(e) {
             console.error('loadVersionCards error:', e);
         }
     }
     
-    get showVersionCards() {
-        return this.selectedBaseName && this.versionCards.length > 0;
+    get hasSelectedComponent() {
+        return this.selectedBaseName != null;
     }
     
-    // === VERSION TIMELINE STAGE ===
-    async viewVersionHistory(e) {
-        this.selectedVersionForHistory = e.currentTarget.dataset.version;
-        this.currentStage = 'timeline';
-        await this.loadTimeline(true);
+    async selectVersion(e) {
+        this.selectedVersion = parseFloat(e.currentTarget.dataset.version);
+        this.historyItems = [];
+        this.tlCursor = null;
+        this.activeTab = 'notes';
+        await this.loadHistory(true);
     }
     
-    async loadTimeline(reset = false) {
-        if (!this.selectedBaseName || !this.selectedVersionForHistory) return;
+    async loadHistory(reset = false) {
+        if (!this.selectedBaseName || !this.selectedVersion) return;
         if (this.tlLoading) return;
         
         this.tlLoading = true;
+        this.statusText = 'Loading history...';
         
         try {
             const page = await getSnapshotsForVersion({
                 baseName: this.selectedBaseName,
-                omniType: this.selectedType || this.family,
-                version: parseFloat(this.selectedVersionForHistory),
-                contributor: this.contributor,
-                pageSize: 25,
+                omniType: this.selectedType,
+                version: this.selectedVersion,
+                contributor: 'all',
+                pageSize: 30,
                 cursor: reset ? null : this.tlCursor
             });
             
-            const incoming = (page.items || [])
-                .map(x => ({
-                    ...x,
-                    isExpanded: false,
-                    formattedDate: this.formatDate(x.at)
-                }))
-                .filter(x => !this.tlIdSet.has(x.id));
-            
-            incoming.forEach(x => this.tlIdSet.add(x.id));
+            const incoming = (page.items || []).map(x => ({
+                ...x,
+                isExpanded: false,
+                formattedDate: this.formatDateTime(x.at)
+            }));
             
             if (reset) {
                 this.historyItems = [];
-                this.expandedSnapshots.clear();
+                this.expandedSet.clear();
             }
             
             this.historyItems = [...this.historyItems, ...incoming];
             this.tlCursor = page.nextCursor || null;
+            this.statusText = 'Ready';
+            
+            // Render AI notes after DOM update
+            setTimeout(() => this.renderAiNotes(), 100);
         } catch(e) {
-            console.error('loadTimeline error:', e);
+            console.error('loadHistory error:', e);
+            this.statusText = 'Error loading history';
         } finally {
             this.tlLoading = false;
         }
     }
     
-    handleTimelineScroll(e) {
+    renderAiNotes() {
+        this.historyItems.forEach(snap => {
+            const el = this.template.querySelector(`.notes[data-id="${snap.id}"]`);
+            if (el && snap.aiNotesHtml && !el.dataset.rendered) {
+                el.innerHTML = snap.aiNotesHtml;
+                el.dataset.rendered = 'true';
+            }
+        });
+    }
+    
+    formatDateTime(dt) {
+        if (!dt) return '';
+        try {
+            const d = new Date(dt);
+            return d.toLocaleString('en-US', {
+                year: 'numeric', month: 'short', day: '2-digit',
+                hour: '2-digit', minute: '2-digit'
+            });
+        } catch(e) {
+            return dt;
+        }
+    }
+    
+    handleMainScroll(e) {
         const el = e.currentTarget;
-        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
             if (this.tlCursor && !this.tlLoading) {
-                this.loadTimeline(false);
+                this.loadHistory(false);
             }
         }
     }
     
-    formatDate(dateValue) {
-        if (!dateValue) return '';
-        const d = new Date(dateValue);
-        return d.toLocaleString('en-US', {
-            year: 'numeric', month: 'short', day: '2-digit',
-            hour: '2-digit', minute: '2-digit'
-        });
+    // === TABS ===
+    switchTab(e) {
+        this.activeTab = e.currentTarget.dataset.tab;
     }
     
+    get showNotes() { return this.activeTab === 'notes'; }
+    get showDiff() { return this.activeTab === 'diff'; }
+    get showRaw() { return this.activeTab === 'raw'; }
+    get showTimeline() { return this.activeTab === 'timeline'; }
+    
+    get notesTabClass() { return this.activeTab === 'notes' ? 'active' : ''; }
+    get diffTabClass() { return this.activeTab === 'diff' ? 'active' : ''; }
+    get rawTabClass() { return this.activeTab === 'raw' ? 'active' : ''; }
+    get timelineTabClass() { return this.activeTab === 'timeline' ? 'active' : ''; }
+    
+    // === SNAPSHOT EXPAND/COLLAPSE ===
     toggleSnapshot(e) {
         const id = e.currentTarget.dataset.id;
         const item = this.historyItems.find(x => x.id === id);
         if (item) {
             item.isExpanded = !item.isExpanded;
+            if (item.isExpanded) {
+                this.expandedSet.add(id);
+            } else {
+                this.expandedSet.delete(id);
+            }
             this.historyItems = [...this.historyItems];
         }
-    }
-    
-    get expandLabel() {
-        return 'View Details';
     }
     
     copyDiff(e) {
@@ -260,66 +292,22 @@ export default class DeltavaultApp extends LightningElement {
         }
     }
     
-    backToSelector() {
-        this.currentStage = 'selector';
+    backToHome() {
+        this.currentStage = 'home';
+        this.componentList = [];
         this.selectedBaseName = null;
         this.selectedType = null;
         this.selectedComponentName = null;
+        this.selectedVersion = null;
         this.versionCards = [];
-        this.selectedVersionForHistory = null;
         this.historyItems = [];
-        this.tlIdSet.clear();
     }
     
-    backToVersions() {
-        this.currentStage = 'selector';
-        this.selectedVersionForHistory = null;
-        this.historyItems = [];
-        this.tlIdSet.clear();
-    }
-    
-    // === ADMIN ===
-    toggleAdminPanel() {
-        this.showAdminPanel = !this.showAdminPanel;
-    }
-    
-    async trackAndIngestBase() {
-        if (!this.selectedBaseName) return;
-        try {
-            await trackAndIngestBase({
-                family: this.selectedType || this.family,
-                baseName: this.selectedBaseName
-            });
-            await this.loadVersionCards();
-        } catch(e) {
-            console.error('trackAndIngestBase error:', e);
-        }
-    }
-    
-    async runPollerNow() {
-        try {
-            await runPollerNowApex({ lookbackMinutes: 60 });
-            if (this.selectedBaseName && this.selectedVersionForHistory) {
-                await this.loadTimeline(true);
-            }
-        } catch(e) {
-            console.error('runPollerNow error:', e);
-        }
-    }
-    
-    async startScheduler() {
-        try {
-            await startSchedulerApex({ everyMinutes: 5 });
-        } catch(e) {
-            console.error('startScheduler error:', e);
-        }
-    }
-    
-    async stopScheduler() {
-        try {
-            await stopSchedulerApex();
-        } catch(e) {
-            console.error('stopScheduler error:', e);
+    async refresh() {
+        if (this.selectedBaseName && this.selectedVersion) {
+            await this.loadHistory(true);
+        } else if (this.currentStage === 'vault') {
+            await this.fetchComponentList(true);
         }
     }
 }

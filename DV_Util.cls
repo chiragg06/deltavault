@@ -39,35 +39,53 @@ public with sharing class DV_Util {
         if (t == DV_Constants.CompType.OmniProcess && ver != null) name += ' v' + String.valueOf(ver);
         return name;
     }
+    
     private static String pickFirst(SObject rec, Map<String, Schema.SObjectField> f, List<String> keys) {
         for (String k : keys) if (f.containsKey(k) && rec.get(k) != null) return String.valueOf(rec.get(k));
         return null;
     }
 
-    // Strip trailing " vN" or " vN.M" OR "_N" for OmniScripts
+    // REMOVED stripVersion - no longer used
+    // BaseName will just be the FullName (no stripping on backend)
     public static String stripVersion(String full) {
-        if (String.isBlank(full)) return '';
-        
-        // Handle OmniScript pattern: "name_1", "name_2", etc.
-        // Also handle: "name v1", "name v2", etc.
-        String result = full.trim();
-        
-        // Pattern 1: "_N" at the end (OmniScript: test_version_English_1)
-        result = result.replaceAll('_\\d+$', '');
-        
-        // Pattern 2: " vN" or " vN.M" at the end
-        result = result.replaceAll('\\s+v\\d+(?:\\.\\d+)?$', '');
-        
-        return result;
+        // Keep original - no stripping
+        return full != null ? full : '';
     }
 
     // ---- JSON helpers -------------------------------------------------------
+    // ADDED: Sanitize control characters that break JSON
+    private static String sanitizeForJson(String str) {
+        if (String.isBlank(str)) return str;
+        
+        // Remove problematic control characters (ASCII 0-31 except \t, \n, \r)
+        return str
+            .replace('\u0000', '') .replace('\u0001', '') .replace('\u0002', '')
+            .replace('\u0003', '') .replace('\u0004', '') .replace('\u0005', '')
+            .replace('\u0006', '') .replace('\u0007', '') .replace('\u0008', '')
+            // Keep \u0009 (tab), \u000A (newline), \u000D (carriage return)
+            .replace('\u000B', '') .replace('\u000C', '')
+            .replace('\u000E', '') .replace('\u000F', '') .replace('\u0010', '')
+            .replace('\u0011', '') .replace('\u0012', '') .replace('\u0013', '')
+            .replace('\u0014', '') .replace('\u0015', '') .replace('\u0016', '')
+            .replace('\u0017', '') .replace('\u0018', '') .replace('\u0019', '')
+            .replace('\u001A', '') .replace('\u001B', '') .replace('\u001C', '')
+            .replace('\u001D', '') .replace('\u001E', '') .replace('\u001F', '');
+    }
+
     public static String normalizeJson(String maybeJson, Integer max) {
         if (String.isBlank(maybeJson)) return null;
+        
+        // ADDED: Sanitize first
+        maybeJson = sanitizeForJson(maybeJson);
+        
         try {
             Object u = JSON.deserializeUntyped(maybeJson);
             Object sorted = sortJson(u);
             String pretty = JSON.serializePretty(sorted);
+            
+            // ADDED: Sanitize output too
+            pretty = sanitizeForJson(pretty);
+            
             if (max != null && pretty.length() > max) {
                 return pretty.substring(0, max) + '\n... [TRUNCATED - ' + pretty.length() + ' chars total]';
             }
@@ -159,6 +177,7 @@ public with sharing class DV_Util {
         else if (f.containsKey('OmniProcessVersionNumber')) v = rec.get('OmniProcessVersionNumber');
         return toDecimalSafe(v);
     }
+    
     public static Decimal sniffVersion(Map<String,Object> m) {
         if (m == null) return null;
         Object v = null;
@@ -167,6 +186,7 @@ public with sharing class DV_Util {
         else if (m.containsKey('OmniProcessVersionNumber')) v = m.get('OmniProcessVersionNumber');
         return toDecimalSafe(v);
     }
+    
     private static Decimal toDecimalSafe(Object v) {
         if (v == null) return null;
         try { return (v instanceof Decimal) ? (Decimal)v : Decimal.valueOf(String.valueOf(v)); }
@@ -176,6 +196,7 @@ public with sharing class DV_Util {
     private static void putIfPresent(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field){
         if (f.containsKey(field)) out.put(field, rec.get(field));
     }
+    
     private static void normIfPresent(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field, Integer max){
         if (f.containsKey(field) && rec.get(field) != null)
             out.put(field, normalizeJson(String.valueOf(rec.get(field)), max));
@@ -201,7 +222,6 @@ public with sharing class DV_Util {
             'ExpectedInputJson','ExpectedOutputJson','InputType','OutputType','GlobalKey',
             'FormulaExpression','FormulaResultPath','DefaultValue','InputFieldName','ParentElementName','SequenceNumber','Level',
             'OmniProcessId','OmniDataTransformationId',
-            // DataRaptor Item fields
             'OutputObjectName','OutputFieldName','InputObjectName',
             'LookupObjectName','LookupByFieldName','LookupReturnedFieldName',
             'FilterGroup','FilterOperator','IsDisabled','IsRequired',

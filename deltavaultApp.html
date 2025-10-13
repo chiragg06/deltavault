@@ -1,11 +1,8 @@
 <template>
-  <!-- ======================== -->
-  <!-- ENTRY SCREEN: ICON + ENTER VAULT -->
-  <!-- ======================== -->
+  <!-- ENTRY SCREEN -->
   <template if:true={isEntryStage}>
     <div class="entry-shell">
       <div class="entry-content">
-        <!-- Vault Icon -->
         <div class="entry-icon">
           <template if:true={vaultIconUrl}>
             <img src={vaultIconUrl} alt="Vault Icon" onerror={handleIconError} />
@@ -26,9 +23,7 @@
     </div>
   </template>
 
-  <!-- ======================== -->
-  <!-- HOME SCREEN: APP DRAWER (3 BIG CARDS) -->
-  <!-- ======================== -->
+  <!-- HOME SCREEN -->
   <template if:true={isHomeStage}>
     <div class="home-shell">
       <div class="home-header">
@@ -58,16 +53,11 @@
     </div>
   </template>
 
-  <!-- ======================== -->
-  <!-- VAULT SCREEN: LOGBOOK UI -->
-  <!-- ======================== -->
+  <!-- VAULT SCREEN -->
   <template if:true={isVaultStage}>
     <div class="shell">
-      <!-- Top Bar -->
       <header class="topbar">
-        <button class="back-btn" onclick={backToHome} title="Back to Home">
-          ◀
-        </button>
+        <button class="back-btn" onclick={backToHome} title="Back to Home">◀</button>
         <div class="brand">DeltaVault</div>
         <div class="actions">
           <lightning-button variant="brand" label="Refresh" onclick={refresh}></lightning-button>
@@ -75,9 +65,8 @@
         </div>
       </header>
 
-      <!-- Main Layout -->
       <div class="layout">
-        <!-- Left Sidebar: Component List (BaseName only) -->
+        <!-- Left Sidebar -->
         <aside class="sidebar" onscroll={handleListScroll}>
           <div class="sidebar-header">
             <div class="section-title">COMPONENTS ({family})</div>
@@ -113,17 +102,18 @@
           </template>
         </aside>
 
-        <!-- Right Panel: Version Cards OR History -->
+        <!-- Right Panel -->
         <main class="main" onscroll={handleMainScroll}>
-          <!-- Show version cards when component selected -->
+          <!-- Version Cards -->
           <template if:true={hasSelectedComponent}>
-            <template if:false={selectedVersion}>
+            <template if:false={selectedComponentId}>
               <div class="version-grid-container">
                 <h2 class="main-title">{selectedComponentName}</h2>
                 <div class="version-grid">
                   <template for:each={versionCards} for:item="vc">
-                    <button key={vc.version}
+                    <button key={vc.componentId}
                             class="version-card"
+                            data-componentid={vc.componentId}
                             data-version={vc.version}
                             onclick={selectVersion}>
                       <span class="version-icon">📦</span>
@@ -134,8 +124,8 @@
               </div>
             </template>
             
-            <!-- Show history when version selected -->
-            <template if:true={selectedVersion}>
+            <!-- History View -->
+            <template if:true={selectedComponentId}>
               <!-- Tabs -->
               <div class="tabs">
                 <button class={notesTabClass} data-tab="notes" onclick={switchTab}>Notes</button>

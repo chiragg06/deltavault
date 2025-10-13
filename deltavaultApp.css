@@ -65,7 +65,6 @@
   background: var(--border);
   border-radius: 4px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
   background: #3a3a42;
 }
@@ -455,7 +454,7 @@
 
 /* Version Grid */
 .version-grid-container {
-  max-width: 900px;
+  max-width: 100%; /* FIXED: Changed from 900px to 100% */
 }
 
 .main-title {
@@ -535,9 +534,11 @@
 
 /* ==================== */
 /* TAB CONTENT          */
+/* FIXED: Full width for better readability */
 /* ==================== */
 .tab-content {
-  max-width: 900px;
+  max-width: 100%; /* FIXED: Changed from 900px to 100% */
+  width: 100%;
 }
 
 .title {
@@ -607,23 +608,26 @@
 
 /* ==================== */
 /* MARKDOWN / NOTES     */
+/* FIXED: Full width for AI notes */
 /* ==================== */
 .markdown {
   color: var(--fg);
-  line-height: 1.6;
+  line-height: 1.8; /* FIXED: Increased from 1.6 */
+  max-width: 100%; /* FIXED: Full width */
+  width: 100%;
 }
 
 .markdown p {
-  margin: 0 0 12px 0;
+  margin: 0 0 16px 0; /* FIXED: Increased from 12px */
 }
 
 .markdown ul {
-  margin: 0 0 12px 18px;
+  margin: 0 0 16px 24px; /* FIXED: Increased spacing */
   padding-left: 0;
 }
 
 .markdown li {
-  margin-bottom: 6px;
+  margin-bottom: 8px; /* FIXED: Increased from 6px */
 }
 
 .markdown strong {
@@ -739,4 +743,3 @@
   color: var(--muted);
   font-size: 0.875rem;
 }
-

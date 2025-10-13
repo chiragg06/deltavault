@@ -13,13 +13,12 @@ public with sharing class DV_VaultApi {
     
     public class CompRow {
         @AuraEnabled public Id id;
-        @AuraEnabled public String baseName;
+        @AuraEnabled public String fullName;  // CHANGED: Return full name instead of baseName
         @AuraEnabled public String type;
         @AuraEnabled public String subType;
         @AuraEnabled public Boolean active;
         @AuraEnabled public Datetime lastSeen;
-        @AuraEnabled public Integer versionCount;
-        @AuraEnabled public Decimal latestVersion;
+        @AuraEnabled public Decimal version;  // ADDED: Version number
         @AuraEnabled public Datetime latestAt;
         @AuraEnabled public String latestChangeType;
         @AuraEnabled public String latestActor;
@@ -43,7 +42,6 @@ public with sharing class DV_VaultApi {
         @AuraEnabled public Integer count;
     }
     
-    // Get contributors
     @AuraEnabled(cacheable=true)
     public static List<ContributorOption> getContributors(String family) {
         Set<String> allowed = new Set<String>{ 'OmniProcess', 'Flexcard', 'DataMapper' };
@@ -81,7 +79,7 @@ public with sharing class DV_VaultApi {
         return result;
     }
     
-    // Get unique components grouped by BaseName
+    // SIMPLIFIED: Just return all components with their full names
     @AuraEnabled(cacheable=true)
     public static CompPage getComponentsPage(
         String family, 
@@ -94,88 +92,73 @@ public with sharing class DV_VaultApi {
 
         Set<String> allowed = new Set<String>{ 'OmniProcess', 'Flexcard', 'DataMapper' };
 
-        // Get unique BaseNames with latest seen date
-        String baseQuery = 'SELECT BaseName__c, OmniType__c, MAX(LastSeenModified__c) maxSeen ' +
-                           'FROM OmniComponent__c ' +
-                           'WHERE OmniType__c IN :allowed AND BaseName__c != null ';
+        Datetime cTs = null;
+        Id cId = null;
+        if (!String.isBlank(cursor) && cursor.contains('|')) {
+            List<String> p = cursor.split('\\|');
+            Long ms = Long.valueOf(p[0]);
+            cTs = Datetime.newInstance(1970,1,1).addSeconds((Integer)(ms/1000));
+            cId = Id.valueOf(p[1]);
+        }
+
+        String whereClause = ' WHERE OmniType__c IN :allowed AND FullName__c != null ';
         
         if (!String.isBlank(family) && family != 'all') {
-            baseQuery += 'AND OmniType__c = :family ';
+            whereClause += ' AND OmniType__c = :family ';
         }
         
         if (!String.isBlank(search)) {
             String likel = '%' + search + '%';
-            baseQuery += 'AND BaseName__c LIKE :likel ';
+            whereClause += ' AND FullName__c LIKE :likel ';
         }
         
-        baseQuery += 'GROUP BY BaseName__c, OmniType__c ' +
-                     'ORDER BY MAX(LastSeenModified__c) DESC ' +
-                     'LIMIT 1000';
+        if (cTs != null && cId != null) {
+            whereClause += ' AND (LastSeenModified__c < :cTs OR (LastSeenModified__c = :cTs AND Id < :cId)) ';
+        }
 
-        List<AggregateResult> baseResults = Database.query(baseQuery);
+        List<OmniComponent__c> comps = Database.query(
+            'SELECT Id, FullName__c, OmniType__c, SubType__c, IsActive__c, LastSeenModified__c ' +
+            'FROM OmniComponent__c ' + whereClause +
+            'ORDER BY LastSeenModified__c DESC, Id DESC ' +
+            'LIMIT :pageSize'
+        );
 
-        // Build component rows with aggregated data
         List<CompRow> items = new List<CompRow>();
+        Set<Id> compIds = new Set<Id>();
+        for (OmniComponent__c c : comps) {
+            compIds.add(c.Id);
+        }
 
-        for (AggregateResult ar : baseResults) {
-            String baseName = (String) ar.get('BaseName__c');
-            String omniType = (String) ar.get('OmniType__c');
-            Datetime maxSeen = (Datetime) ar.get('maxSeen');
-
-            // Get latest snapshot for this base/type
-            List<OmniSnapshot__c> snaps = [
-                SELECT Id, Version__c, ModifiedAt__c, ChangeType__c, ActorName__c
+        // Get latest snapshot for each component
+        Map<Id, OmniSnapshot__c> latestSnapByComp = new Map<Id, OmniSnapshot__c>();
+        if (!compIds.isEmpty()) {
+            for (OmniSnapshot__c s : [
+                SELECT Id, OmniComponent__c, Version__c, ModifiedAt__c, ChangeType__c, ActorName__c
                 FROM OmniSnapshot__c
-                WHERE BaseName__c = :baseName
-                AND OmniComponent__r.OmniType__c = :omniType
+                WHERE OmniComponent__c IN :compIds
                 ORDER BY ModifiedAt__c DESC, Id DESC
-                LIMIT 1
-            ];
-
-            // Count distinct versions (in memory, Version__c can't be aggregated)
-            Integer versionCount = 0;
-            List<OmniSnapshot__c> versionSnaps = [
-                SELECT Version__c
-                FROM OmniSnapshot__c
-                WHERE BaseName__c = :baseName
-                AND OmniComponent__r.OmniType__c = :omniType
-                AND Version__c != NULL
-            ];
-            
-            Set<Decimal> uniqueVersions = new Set<Decimal>();
-            for (OmniSnapshot__c vs : versionSnaps) {
-                if (vs.Version__c != null) {
-                    uniqueVersions.add(vs.Version__c);
+            ]) {
+                if (!latestSnapByComp.containsKey(s.OmniComponent__c)) {
+                    latestSnapByComp.put(s.OmniComponent__c, s);
                 }
             }
-            versionCount = uniqueVersions.size();
+        }
 
-            // Get one representative component for metadata
-            List<OmniComponent__c> comps = [
-                SELECT Id, SubType__c, IsActive__c
-                FROM OmniComponent__c
-                WHERE BaseName__c = :baseName
-                AND OmniType__c = :omniType
-                LIMIT 1
-            ];
-
+        for (OmniComponent__c c : comps) {
             CompRow row = new CompRow();
-            row.baseName = baseName;
-            row.type = omniType;
-            row.lastSeen = maxSeen;
-            row.versionCount = versionCount;
+            row.id = c.Id;
+            row.fullName = c.FullName__c;  // Return full name
+            row.type = c.OmniType__c;
+            row.subType = c.SubType__c;
+            row.active = c.IsActive__c;
+            row.lastSeen = c.LastSeenModified__c;
 
-            if (!comps.isEmpty()) {
-                row.id = comps[0].Id;
-                row.subType = comps[0].SubType__c;
-                row.active = comps[0].IsActive__c;
-            }
-
-            if (!snaps.isEmpty()) {
-                row.latestVersion = snaps[0].Version__c;
-                row.latestAt = snaps[0].ModifiedAt__c;
-                row.latestChangeType = snaps[0].ChangeType__c;
-                row.latestActor = snaps[0].ActorName__c;
+            OmniSnapshot__c snap = latestSnapByComp.get(c.Id);
+            if (snap != null) {
+                row.version = snap.Version__c;
+                row.latestAt = snap.ModifiedAt__c;
+                row.latestChangeType = snap.ChangeType__c;
+                row.latestActor = snap.ActorName__c;
             }
 
             items.add(row);
@@ -184,57 +167,20 @@ public with sharing class DV_VaultApi {
         CompPage page = new CompPage();
         page.items = items;
         page.totalCount = items.size();
+        
+        if (!comps.isEmpty()) {
+            OmniComponent__c tail = comps[comps.size()-1];
+            Long ms = tail.LastSeenModified__c == null ? 0 : tail.LastSeenModified__c.getTime();
+            page.nextCursor = String.valueOf(ms) + '|' + tail.Id;
+        }
+        
         return page;
     }
     
-    // Get versions for a specific BaseName - CRITICAL FOR VERSION CARDS
+    // Get snapshots for specific component ID
     @AuraEnabled(cacheable=true)
-    public static List<Decimal> getVersionsForBase(String baseName, String omniType) {
-        if (String.isBlank(baseName) || String.isBlank(omniType)) {
-            System.debug('getVersionsForBase: baseName or omniType is blank');
-            return new List<Decimal>();
-        }
-        
-        System.debug('getVersionsForBase: Searching for baseName=' + baseName + ', omniType=' + omniType);
-        
-        // Query all snapshots and deduplicate in Apex (Version__c can't be grouped)
-        List<OmniSnapshot__c> snaps = [
-            SELECT Version__c
-            FROM OmniSnapshot__c
-            WHERE BaseName__c = :baseName
-            AND OmniComponent__r.OmniType__c = :omniType
-            AND Version__c != NULL
-            ORDER BY Version__c DESC
-        ];
-        
-        // Deduplicate versions in memory
-        Set<Decimal> versionSet = new Set<Decimal>();
-        for (OmniSnapshot__c s : snaps) {
-            if (s.Version__c != null) {
-                versionSet.add(s.Version__c);
-            }
-        }
-        
-        List<Decimal> out = new List<Decimal>(versionSet);
-        out.sort();
-        
-        // Reverse to get DESC order
-        List<Decimal> reversed = new List<Decimal>();
-        for (Integer i = out.size() - 1; i >= 0; i--) {
-            reversed.add(out[i]);
-            System.debug('Found version: ' + out[i]);
-        }
-        
-        System.debug('getVersionsForBase: Returning ' + reversed.size() + ' versions');
-        return reversed;
-    }
-    
-    // Get timeline for specific version with contributor filter
-    @AuraEnabled(cacheable=true)
-    public static SnapPage getSnapshotsForVersion(
-        String baseName, 
-        String omniType, 
-        Decimal version,
+    public static SnapPage getSnapshotsForComponent(
+        Id componentId,
         String contributor,
         Integer pageSize, 
         String cursor
@@ -244,12 +190,9 @@ public with sharing class DV_VaultApi {
         SnapPage page = new SnapPage();
         page.items = new List<SnapRow>();
         
-        if (String.isBlank(baseName) || String.isBlank(omniType) || version == null) {
-            System.debug('getSnapshotsForVersion: Missing required parameters');
+        if (componentId == null) {
             return page;
         }
-        
-        System.debug('getSnapshotsForVersion: baseName=' + baseName + ', omniType=' + omniType + ', version=' + version);
         
         Datetime cTs = null; 
         Id cId = null;
@@ -261,9 +204,7 @@ public with sharing class DV_VaultApi {
             cId = Id.valueOf(p[1]);
         }
         
-        String whereClause = ' WHERE BaseName__c = :baseName ' +
-                           ' AND Version__c = :version ' +
-                           ' AND OmniComponent__r.OmniType__c = :omniType ';
+        String whereClause = ' WHERE OmniComponent__c = :componentId ';
         
         if (!String.isBlank(contributor) && contributor != 'all') {
             whereClause += ' AND ActorName__c = :contributor ';
@@ -279,8 +220,6 @@ public with sharing class DV_VaultApi {
             'FROM OmniSnapshot__c ' + whereClause +
             'ORDER BY ModifiedAt__c DESC, Id DESC LIMIT :pageSize'
         );
-        
-        System.debug('getSnapshotsForVersion: Found ' + snaps.size() + ' snapshots');
         
         for (OmniSnapshot__c s : snaps) {
             SnapRow r = new SnapRow();

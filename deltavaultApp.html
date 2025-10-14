@@ -104,23 +104,96 @@
 
         <!-- Right Panel -->
         <main class="main" onscroll={handleMainScroll}>
-          <!-- Version Cards -->
+          <!-- Version Cards/List -->
           <template if:true={hasSelectedComponent}>
             <template if:false={selectedComponentId}>
               <div class="version-grid-container">
-                <h2 class="main-title">{selectedComponentName}</h2>
-                <div class="version-grid">
-                  <template for:each={versionCards} for:item="vc">
-                    <button key={vc.componentId}
-                            class="version-card"
-                            data-componentid={vc.componentId}
-                            data-version={vc.version}
-                            onclick={selectVersion}>
-                      <span class="version-icon">📦</span>
-                      <span class="version-label">{vc.label}</span>
-                    </button>
-                  </template>
+                <!-- Header with Title, Search, and View Toggle -->
+                <div class="version-header">
+                  <h2 class="main-title">{selectedComponentName}</h2>
+                  
+                  <div class="version-controls">
+                    <!-- Search Input -->
+                    <lightning-input 
+                      type="search"
+                      variant="label-hidden"
+                      placeholder="Search versions..."
+                      value={versionSearch}
+                      onchange={onVersionSearchChange}
+                      class="version-search">
+                    </lightning-input>
+                    
+                    <!-- View Toggle Buttons -->
+                    <div class="view-toggle">
+                      <button 
+                        class={gridViewBtnClass} 
+                        onclick={switchToGridView}
+                        title="Grid View">
+                        <span class="icon">⊞</span>
+                      </button>
+                      <button 
+                        class={listViewBtnClass} 
+                        onclick={switchToListView}
+                        title="List View">
+                        <span class="icon">☰</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
+                
+                <!-- Grid View -->
+                <template if:true={isGridView}>
+                  <div class="version-grid">
+                    <template for:each={filteredVersionCards} for:item="vc">
+                      <button key={vc.componentId}
+                              class="version-card"
+                              data-componentid={vc.componentId}
+                              data-version={vc.version}
+                              onclick={selectVersion}>
+                        <span class="version-icon">📦</span>
+                        <span class="version-label">{vc.label}</span>
+                        <template if:true={vc.latestAt}>
+                          <span class="version-date">{vc.formattedDate}</span>
+                        </template>
+                      </button>
+                    </template>
+                  </div>
+                </template>
+                
+                <!-- List View -->
+                <template if:true={isListView}>
+                  <div class="version-list">
+                    <template for:each={filteredVersionCards} for:item="vc">
+                      <button key={vc.componentId}
+                              class="version-list-item"
+                              data-componentid={vc.componentId}
+                              data-version={vc.version}
+                              onclick={selectVersion}>
+                        <div class="version-list-left">
+                          <span class="version-icon-small">📦</span>
+                          <span class="version-label-large">{vc.label}</span>
+                        </div>
+                        <div class="version-list-right">
+                          <template if:true={vc.latestAt}>
+                            <span class="version-meta">{vc.formattedDate}</span>
+                          </template>
+                          <template if:true={vc.latestActor}>
+                            <span class="version-actor">{vc.latestActor}</span>
+                          </template>
+                          <span class="version-arrow">→</span>
+                        </div>
+                      </button>
+                    </template>
+                  </div>
+                </template>
+                
+                <!-- No Results Message -->
+                <template if:true={showNoVersionResults}>
+                  <div class="no-results">
+                    <p class="muted">No versions match "{versionSearch}"</p>
+                    <button class="text-btn" onclick={clearVersionSearch}>Clear Search</button>
+                  </div>
+                </template>
               </div>
             </template>
             
@@ -128,14 +201,13 @@
             <template if:true={selectedComponentId}>
               <!-- Tabs -->
               <div class="tabs">
-                <button class={notesTabClass} data-tab="notes" onclick={switchTab}>Notes</button>
-                <button class={diffTabClass} data-tab="diff" onclick={switchTab}>Diff</button>
-                <button class={rawTabClass} data-tab="raw" onclick={switchTab}>Raw</button>
+                <button class={summaryTabClass} data-tab="summary" onclick={switchTab}>Summary</button>
+                <button class={diffTabClass} data-tab="diff" onclick={switchTab}>Technical Diff</button>
                 <button class={timelineTabClass} data-tab="timeline" onclick={switchTab}>Timeline</button>
               </div>
 
-              <!-- NOTES TAB -->
-              <template if:true={showNotes}>
+              <!-- SUMMARY TAB -->
+              <template if:true={showSummary}>
                 <section class="tab-content">
                   <h1 class="title">{selectedComponentName} v{selectedVersion}</h1>
                   
@@ -152,24 +224,8 @@
                         <span class="history-date">{snap.formattedDate}</span>
                       </div>
                       
-                      <div class="markdown notes" data-id={snap.id}></div>
-                      
-                      <template if:true={snap.isExpanded}>
-                        <div class="details-section">
-                          <h4>Diff</h4>
-                          <pre class="block">{snap.diffText}</pre>
-                          
-                          <h4>Raw JSON</h4>
-                          <pre class="block">{snap.rawJson}</pre>
-                        </div>
-                      </template>
-                      
-                      <div class="history-actions">
-                        <button class="text-btn" data-id={snap.id} onclick={toggleSnapshot}>
-                          <template if:false={snap.isExpanded}>Show Details</template>
-                          <template if:true={snap.isExpanded}>Hide Details</template>
-                        </button>
-                      </div>
+                      <!-- AI-Generated Highlight Cards -->
+                      <div class="notes-container" data-id={snap.id}></div>
                     </article>
                   </template>
                   
@@ -182,7 +238,7 @@
               <!-- DIFF TAB -->
               <template if:true={showDiff}>
                 <section class="tab-content">
-                  <h1 class="title">{selectedComponentName} v{selectedVersion} - Diff View</h1>
+                  <h1 class="title">{selectedComponentName} v{selectedVersion} - Technical Changes</h1>
                   
                   <template for:each={historyItems} for:item="snap">
                     <article key={snap.id} class="history-card">
@@ -194,36 +250,46 @@
                         <span class="history-date">{snap.formattedDate}</span>
                       </div>
                       
-                      <pre class="block diff-block">{snap.diffText}</pre>
-                      
-                      <div class="history-actions">
-                        <button class="text-btn" data-id={snap.id} onclick={copyDiff}>Copy</button>
-                      </div>
-                    </article>
-                  </template>
-                </section>
-              </template>
-
-              <!-- RAW TAB -->
-              <template if:true={showRaw}>
-                <section class="tab-content">
-                  <h1 class="title">{selectedComponentName} v{selectedVersion} - Raw JSON</h1>
-                  
-                  <template for:each={historyItems} for:item="snap">
-                    <article key={snap.id} class="history-card">
-                      <div class="history-header">
-                        <div class="history-badges">
-                          <span class="badge change">{snap.changeType}</span>
-                          <span class="badge version">v{snap.version}</span>
+                      <!-- Readable Summary -->
+                      <div class="diff-summary-card">
+                        <div class="diff-summary-title">
+                          <span>📊</span>
+                          <span>What Changed</span>
                         </div>
-                        <span class="history-date">{snap.formattedDate}</span>
+                        <div class="diff-summary-content" data-summary-id={snap.id}></div>
                       </div>
                       
-                      <pre class="block">{snap.rawJson}</pre>
-                      
-                      <div class="history-actions">
-                        <button class="text-btn" data-id={snap.id} onclick={copyJson}>Copy</button>
+                      <!-- Collapsible Detailed Changes -->
+                      <div class="detailed-changes-section">
+                        <div class="detailed-changes-header" data-id={snap.id} onclick={toggleDetailedChanges}>
+                          <div class="detailed-changes-title-wrapper">
+                            <span class="collapse-icon" data-icon-id={snap.id}>▼</span>
+                            <h3 class="detailed-changes-title">
+                              <span>🔍</span>
+                              <span>Technical Details</span>
+                            </h3>
+                          </div>
+                          <span class="expand-hint">Click to expand</span>
+                        </div>
+                        <div class="detailed-changes-body" data-body-id={snap.id}>
+                          <div class="diff-viewer" data-diff-id={snap.id}></div>
+                          <div class="detailed-changes-actions">
+                            <button class="text-btn" data-id={snap.id} onclick={copyDiff}>Copy Raw Diff</button>
+                            <button class="text-btn" data-id={snap.id} onclick={toggleRawJson}>
+                              <template if:false={snap.showRawJson}>Show Raw JSON</template>
+                              <template if:true={snap.showRawJson}>Hide Raw JSON</template>
+                            </button>
+                          </div>
+                        </div>
                       </div>
+                      
+                      <!-- Raw JSON (Collapsible) -->
+                      <template if:true={snap.showRawJson}>
+                        <div class="details-section">
+                          <h4>Raw JSON</h4>
+                          <pre class="block">{snap.rawJson}</pre>
+                        </div>
+                      </template>
                     </article>
                   </template>
                 </section>

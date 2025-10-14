@@ -16,26 +16,24 @@ export default class DeltavaultApp extends LightningElement {
     listCursor = null;
     listLoading = false;
     
-    // Selected component group
     selectedBaseName = null;
     selectedType = null;
     selectedComponentName = null;
     
-    // Version cards
     @track versionCards = [];
+    @track versionViewMode = 'grid';
+    @track versionSearch = '';
     
-    // Selected specific version/component
     selectedComponentId = null;
     selectedVersion = null;
     
-    // History
     @track historyItems = [];
     tlCursor = null;
     tlLoading = false;
     loadedSnapshotIds = new Set();
     lastUsedCursor = null;
     
-    @track activeTab = 'notes';
+    @track activeTab = 'summary';
     @track statusText = 'Ready';
     expandedSet = new Set();
     
@@ -44,6 +42,33 @@ export default class DeltavaultApp extends LightningElement {
     get isEntryStage() { return this.currentStage === 'entry'; }
     get isHomeStage() { return this.currentStage === 'home'; }
     get isVaultStage() { return this.currentStage === 'vault'; }
+    
+    get isGridView() { return this.versionViewMode === 'grid'; }
+    get isListView() { return this.versionViewMode === 'list'; }
+    
+    get gridViewBtnClass() { 
+        return this.versionViewMode === 'grid' ? 'view-btn active' : 'view-btn'; 
+    }
+    get listViewBtnClass() { 
+        return this.versionViewMode === 'list' ? 'view-btn active' : 'view-btn'; 
+    }
+    
+    get filteredVersionCards() {
+        if (!this.versionSearch) {
+            return this.versionCards;
+        }
+        
+        const searchLower = this.versionSearch.toLowerCase();
+        return this.versionCards.filter(vc => {
+            return vc.label.toLowerCase().includes(searchLower) ||
+                   (vc.fullName && vc.fullName.toLowerCase().includes(searchLower)) ||
+                   (vc.latestActor && vc.latestActor.toLowerCase().includes(searchLower));
+        });
+    }
+    
+    get showNoVersionResults() {
+        return this.versionSearch && this.filteredVersionCards.length === 0;
+    }
     
     handleIconError() {
         this.iconError = true;
@@ -88,43 +113,32 @@ export default class DeltavaultApp extends LightningElement {
         }
     }
     
-    // CLIENT-SIDE: Strip version for grouping
     stripVersionClientSide(fullName, omniType) {
         if (!fullName) return '';
         
-        // DataRaptor: no stripping
         if (omniType === 'DataMapper') {
             return fullName;
         }
         
         let result = fullName.trim();
         
-        // Handle "name • type vN" pattern
         if (result.includes(' • ')) {
             const parts = result.split(' • ');
             if (parts.length >= 2) {
-                // Strip from name part
                 let namePart = parts[0].trim();
                 const typePart = parts.slice(1).join(' • ').trim();
-                
-                // Remove _1, _2, etc from name
                 namePart = namePart.replace(/_\d+$/, '');
-                
-                // Reconstruct
                 result = namePart + ' • ' + typePart;
             }
         } else {
-            // No bullet, just strip _N
             result = result.replace(/_\d+$/, '');
         }
         
-        // Also strip " vN" or " vN.M"
         result = result.replace(/\s+v\d+(\.\d+)?$/, '');
         
         return result;
     }
     
-    // CLIENT-SIDE: Group components by stripped name
     get uniqueComponents() {
         const groupMap = new Map();
         
@@ -142,7 +156,6 @@ export default class DeltavaultApp extends LightningElement {
             groupMap.get(baseName).components.push(comp);
         }
         
-        // Convert to array and add version count
         const result = [];
         for (const [baseName, group] of groupMap) {
             result.push({
@@ -170,22 +183,37 @@ export default class DeltavaultApp extends LightningElement {
         this.fetchComponentList(true);
     }
     
+    onVersionSearchChange(e) {
+        this.versionSearch = e.detail.value || '';
+    }
+    
+    clearVersionSearch() {
+        this.versionSearch = '';
+    }
+    
+    switchToGridView() {
+        this.versionViewMode = 'grid';
+    }
+    
+    switchToListView() {
+        this.versionViewMode = 'list';
+    }
+    
     async selectComponent(e) {
         this.selectedBaseName = e.currentTarget.dataset.basename;
         this.selectedType = e.currentTarget.dataset.type;
-        this.selectedComponentName
         this.selectedComponentName = this.selectedBaseName;
         
-        // Clear previous selection
         this.selectedComponentId = null;
         this.selectedVersion = null;
         this.historyItems = [];
         this.versionCards = [];
-        this.activeTab = 'notes';
+        this.versionSearch = '';
+        this.versionViewMode = 'grid';
+        this.activeTab = 'summary';
         this.loadedSnapshotIds = new Set();
         this.lastUsedCursor = null;
         
-        // Update selected state in sidebar
         this.template.querySelectorAll('.tree .item').forEach(item => {
             if (item.dataset.basename === this.selectedBaseName) {
                 item.classList.add('selected');
@@ -201,53 +229,43 @@ export default class DeltavaultApp extends LightningElement {
         this.versionCards = [];
         this.statusText = 'Loading versions...';
         
-        console.log('loadVersionCards: baseName=', this.selectedBaseName, 'type=', this.selectedType);
-        
         try {
-            // SPECIAL CASE: DataRaptor has no versions, load snapshots directly
             if (this.selectedType === 'DataMapper') {
-                console.log('DataMapper detected - loading snapshots directly');
-                
-                // Find the DataRaptor component
                 const drComp = this.componentList.find(c => 
                     c.fullName === this.selectedBaseName && c.type === 'DataMapper'
                 );
                 
                 if (drComp) {
                     this.selectedComponentId = drComp.id;
-                    this.selectedVersion = 1; // Dummy for display
+                    this.selectedVersion = 1;
                     await this.loadHistory(true);
                 }
                 return;
             }
             
-            // For OmniProcess and Flexcard: Find all versions
             const matchingComponents = this.componentList.filter(c => {
                 const stripped = this.stripVersionClientSide(c.fullName, c.type);
                 return stripped === this.selectedBaseName && c.type === this.selectedType;
             });
             
-            console.log('Matching components:', matchingComponents.length);
-            
             if (matchingComponents.length === 0) {
-                console.warn('No versions found');
                 this.statusText = 'No versions found';
                 return;
             }
             
-            // Create version cards
             this.versionCards = matchingComponents.map(c => ({
                 componentId: c.id,
                 version: c.version || 1,
                 label: `v${c.version || 1}`,
-                fullName: c.fullName
+                fullName: c.fullName,
+                latestAt: c.latestAt,
+                latestActor: c.latestActor,
+                formattedDate: c.latestAt ? this.formatDateTime(c.latestAt) : null
             }));
             
-            // Sort by version descending
             this.versionCards.sort((a, b) => (b.version || 0) - (a.version || 0));
             
             this.statusText = 'Ready';
-            console.log('Version cards:', this.versionCards.length);
         } catch(e) {
             console.error('loadVersionCards error:', e);
             this.statusText = 'Error loading versions';
@@ -265,7 +283,7 @@ export default class DeltavaultApp extends LightningElement {
         this.tlCursor = null;
         this.loadedSnapshotIds = new Set();
         this.lastUsedCursor = null;
-        this.activeTab = 'notes';
+        this.activeTab = 'summary';
         await this.loadHistory(true);
     }
     
@@ -275,7 +293,6 @@ export default class DeltavaultApp extends LightningElement {
         
         const currentCursor = reset ? null : this.tlCursor;
         if (!reset && currentCursor === this.lastUsedCursor) {
-            console.log('Already loaded this page, stopping pagination');
             this.tlCursor = null;
             return;
         }
@@ -291,14 +308,9 @@ export default class DeltavaultApp extends LightningElement {
                 cursor: currentCursor
             });
             
-            console.log('Loaded page:', page.items?.length || 0, 'snapshots');
-            console.log('Next cursor:', page.nextCursor);
-            
-            // Filter by ID only to prevent exact duplicates
             const incoming = (page.items || [])
                 .filter(x => {
                     if (this.loadedSnapshotIds.has(x.id)) {
-                        console.log('Skipping duplicate ID:', x.id);
                         return false;
                     }
                     return true;
@@ -308,6 +320,7 @@ export default class DeltavaultApp extends LightningElement {
                     return {
                         ...x,
                         isExpanded: false,
+                        showRawJson: false,
                         formattedDate: this.formatDateTime(x.at)
                     };
                 });
@@ -319,24 +332,23 @@ export default class DeltavaultApp extends LightningElement {
                 incoming.forEach(x => this.loadedSnapshotIds.add(x.id));
             }
             
-            console.log('Adding', incoming.length, 'new snapshots');
-            
             if (incoming.length > 0) {
                 this.historyItems = [...this.historyItems, ...incoming];
                 this.lastUsedCursor = currentCursor;
                 this.tlCursor = page.nextCursor || null;
             } else if (page.nextCursor) {
-                console.log('No new data but cursor exists, trying next page');
                 this.tlCursor = page.nextCursor;
                 this.lastUsedCursor = currentCursor;
-            } else {
+                } else {
                 this.tlCursor = null;
-                console.log('No more snapshots to load');
             }
             
             this.statusText = 'Ready';
             
-            setTimeout(() => this.renderAiNotes(), 100);
+            setTimeout(() => {
+                this.renderAiNotes();
+                this.renderColorCodedDiff();
+            }, 100);
         } catch(e) {
             console.error('loadHistory error:', e);
             this.statusText = 'Error loading history';
@@ -347,12 +359,207 @@ export default class DeltavaultApp extends LightningElement {
     
     renderAiNotes() {
         this.historyItems.forEach(snap => {
-            const el = this.template.querySelector(`.notes[data-id="${snap.id}"]`);
+            const el = this.template.querySelector(`.notes-container[data-id="${snap.id}"]`);
             if (el && snap.aiNotesHtml && !el.dataset.rendered) {
                 el.innerHTML = snap.aiNotesHtml;
                 el.dataset.rendered = 'true';
             }
         });
+    }
+    
+    renderColorCodedDiff() {
+        this.historyItems.forEach(snap => {
+            // Render detailed diff
+            const diffEl = this.template.querySelector(`.diff-viewer[data-diff-id="${snap.id}"]`);
+            if (diffEl && snap.diffText && !diffEl.dataset.rendered) {
+                diffEl.innerHTML = this.formatDiff(snap.diffText);
+                diffEl.dataset.rendered = 'true';
+            }
+            
+            // Render readable summary
+            const summaryEl = this.template.querySelector(`[data-summary-id="${snap.id}"]`);
+            if (summaryEl && snap.diffText && !summaryEl.dataset.rendered) {
+                summaryEl.innerHTML = this.generateReadableSummary(snap.diffText);
+                summaryEl.dataset.rendered = 'true';
+            }
+        });
+    }
+    
+    generateReadableSummary(diffText) {
+        if (!diffText) return '<p class="diff-summary-text">No changes detected.</p>';
+        
+        const lines = diffText.split('\n');
+        const changes = {
+            added: [],
+            removed: [],
+            changed: []
+        };
+        
+        for (let line of lines) {
+            // Extract element names from diff lines
+            if (line.includes('childPayload') && line.includes('"Name"')) {
+                // Extract element name from childPayload
+                const nameMatch = line.match(/"Name"\s*:\s*"([^"]+)"/);
+                if (nameMatch) {
+                    const elementName = nameMatch[1];
+                    
+                    if (line.startsWith('+ Added')) {
+                        changes.added.push(elementName);
+                    } else if (line.startsWith('- Removed')) {
+                        changes.removed.push(elementName);
+                    }
+                }
+            } else if (line.startsWith('+ Added') && !line.includes('childPayload')) {
+                // Other additions (like properties)
+                const match = line.match(/\+ Added ([A-Za-z0-9_]+)/);
+                if (match && !this.isTechnicalField(match[1])) {
+                    changes.added.push(match[1]);
+                }
+            } else if (line.startsWith('- Removed') && !line.includes('childPayload')) {
+                // Other removals
+                const match = line.match(/\- Removed ([A-Za-z0-9_]+)/);
+                if (match && !this.isTechnicalField(match[1])) {
+                    changes.removed.push(match[1]);
+                }
+            } else if (line.startsWith('~ Changed') && !line.includes('childPayload')) {
+                // Changes
+                const match = line.match(/~ Changed ([A-Za-z0-9_]+)/);
+                if (match && !this.isTechnicalField(match[1])) {
+                    changes.changed.push(match[1]);
+                }
+            }
+        }
+        
+        // Remove duplicates
+        changes.added = [...new Set(changes.added)];
+        changes.removed = [...new Set(changes.removed)];
+        changes.changed = [...new Set(changes.changed)];
+        
+        // Build natural language summary
+        let html = '';
+        
+        const totalChanges = changes.added.length + changes.removed.length + changes.changed.length;
+        
+        if (totalChanges === 0) {
+            return '<p class="diff-summary-text">No significant changes detected.</p>';
+        }
+        
+        // Summary text
+        const parts = [];
+        if (changes.added.length > 0) parts.push(`<strong>${changes.added.length}</strong> new element${changes.added.length !== 1 ? 's' : ''}`);
+        if (changes.removed.length > 0) parts.push(`<strong>${changes.removed.length}</strong> removal${changes.removed.length !== 1 ? 's' : ''}`);
+        if (changes.changed.length > 0) parts.push(`<strong>${changes.changed.length}</strong> modification${changes.changed.length !== 1 ? 's' : ''}`);
+        
+        let summaryText = 'This change includes ';
+        if (parts.length === 1) {
+            summaryText += parts[0];
+        } else if (parts.length === 2) {
+            summaryText += parts[0] + ' and ' + parts[1];
+        } else {
+            summaryText += parts.slice(0, -1).join(', ') + ', and ' + parts[parts.length - 1];
+        }
+        summaryText += '.';
+        
+        html += `<p class="diff-summary-text">${summaryText}</p>`;
+        
+        // Detailed list
+        html += '<ul class="diff-summary-list">';
+        
+        if (changes.added.length > 0) {
+            changes.added.forEach(name => {
+                html += `
+                    <li class="diff-summary-item added">
+                        <span class="change-icon added">✚</span>
+                        <span class="change-text">Added element: <strong>${this.escapeHtml(name)}</strong></span>
+                    </li>
+                `;
+            });
+        }
+        
+        if (changes.removed.length > 0) {
+            changes.removed.forEach(name => {
+                html += `
+                    <li class="diff-summary-item removed">
+                        <span class="change-icon removed">✖</span>
+                        <span class="change-text">Removed element: <strong>${this.escapeHtml(name)}</strong></span>
+                    </li>
+                `;
+            });
+        }
+        
+        if (changes.changed.length > 0) {
+            changes.changed.forEach(name => {
+                html += `
+                    <li class="diff-summary-item changed">
+                        <span class="change-icon changed">⟳</span>
+                        <span class="change-text">Modified element: <strong>${this.escapeHtml(name)}</strong></span>
+                    </li>
+                `;
+            });
+        }
+        
+        html += '</ul>';
+        
+        return html;
+    }
+    
+    isTechnicalField(fieldName) {
+        const technicalFields = [
+            'childPayload', 'childTag', 'childName', 'childObject',
+            'PropertySetConfig', 'SequenceNumber', 'Level', 'ParentElementName',
+            'OmniProcessVersionNumber', 'IsActive', 'Active'
+        ];
+        return technicalFields.includes(fieldName);
+    }
+    
+    toggleDetailedChanges(e) {
+        const id = e.currentTarget.dataset.id;
+        
+        const bodyEl = this.template.querySelector(`[data-body-id="${id}"]`);
+        const iconEl = this.template.querySelector(`[data-icon-id="${id}"]`);
+        
+        if (bodyEl && iconEl) {
+            const isExpanded = bodyEl.classList.contains('expanded');
+            
+            if (isExpanded) {
+                bodyEl.classList.remove('expanded');
+                iconEl.classList.add('collapsed');
+            } else {
+                bodyEl.classList.add('expanded');
+                iconEl.classList.remove('collapsed');
+            }
+        }
+    }
+    
+    formatDiff(diffText) {
+        if (!diffText) return '<div class="diff-line context">No changes</div>';
+        
+        const lines = diffText.split('\n');
+        let html = '';
+        
+        for (let line of lines) {
+            const escaped = this.escapeHtml(line);
+            
+            if (line.startsWith('+ Added') || line.startsWith('+')) {
+                html += `<div class="diff-line added">✚ ${escaped}</div>`;
+            } else if (line.startsWith('- Removed') || line.startsWith('-')) {
+                html += `<div class="diff-line removed">✖ ${escaped}</div>`;
+            } else if (line.startsWith('~ Changed')) {
+                html += `<div class="diff-line changed">⟳ ${escaped}</div>`;
+            } else if (line.startsWith('===') || line.startsWith('---') || line.startsWith('+++')) {
+                html += `<div class="diff-line header">${escaped}</div>`;
+            } else {
+                html += `<div class="diff-line context">${escaped}</div>`;
+            }
+        }
+        
+        return html;
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
     
     formatDateTime(dt) {
@@ -373,37 +580,27 @@ export default class DeltavaultApp extends LightningElement {
         const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
         
         if (atBottom && this.tlCursor && !this.tlLoading && this.selectedComponentId) {
-            console.log('Near bottom, loading more snapshots...');
             this.loadHistory(false);
         }
     }
     
-    // === TABS ===
     switchTab(e) {
         this.activeTab = e.currentTarget.dataset.tab;
     }
     
-    get showNotes() { return this.activeTab === 'notes'; }
+    get showSummary() { return this.activeTab === 'summary'; }
     get showDiff() { return this.activeTab === 'diff'; }
-    get showRaw() { return this.activeTab === 'raw'; }
     get showTimeline() { return this.activeTab === 'timeline'; }
     
-    get notesTabClass() { return this.activeTab === 'notes' ? 'active' : ''; }
+    get summaryTabClass() { return this.activeTab === 'summary' ? 'active' : ''; }
     get diffTabClass() { return this.activeTab === 'diff' ? 'active' : ''; }
-    get rawTabClass() { return this.activeTab === 'raw' ? 'active' : ''; }
     get timelineTabClass() { return this.activeTab === 'timeline' ? 'active' : ''; }
     
-    // === SNAPSHOT EXPAND/COLLAPSE ===
-    toggleSnapshot(e) {
+    toggleRawJson(e) {
         const id = e.currentTarget.dataset.id;
         const item = this.historyItems.find(x => x.id === id);
         if (item) {
-            item.isExpanded = !item.isExpanded;
-            if (item.isExpanded) {
-                this.expandedSet.add(id);
-            } else {
-                this.expandedSet.delete(id);
-            }
+            item.showRawJson = !item.showRawJson;
             this.historyItems = [...this.historyItems];
         }
     }
@@ -413,15 +610,16 @@ export default class DeltavaultApp extends LightningElement {
         const item = this.historyItems.find(x => x.id === id);
         if (item && item.diffText) {
             navigator.clipboard.writeText(item.diffText);
+            this.showToast('Success', 'Diff copied to clipboard', 'success');
         }
     }
     
-    copyJson(e) {
-        const id = e.currentTarget.dataset.id;
-        const item = this.historyItems.find(x => x.id === id);
-        if (item && item.rawJson) {
-            navigator.clipboard.writeText(item.rawJson);
-        }
+    showToast(title, message, variant) {
+        const originalStatus = this.statusText;
+        this.statusText = message;
+        setTimeout(() => {
+            this.statusText = originalStatus;
+        }, 3000);
     }
     
     backToHome() {
@@ -433,6 +631,8 @@ export default class DeltavaultApp extends LightningElement {
         this.selectedComponentId = null;
         this.selectedVersion = null;
         this.versionCards = [];
+        this.versionSearch = '';
+        this.versionViewMode = 'grid';
         this.historyItems = [];
         this.loadedSnapshotIds = new Set();
         this.lastUsedCursor = null;

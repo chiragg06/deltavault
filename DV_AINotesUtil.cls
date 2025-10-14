@@ -63,31 +63,42 @@ public with sharing class DV_AINotesUtil {
         return out;
     }
 
-    // --- AI notes: OmniStudio ---
+    // --- AI notes: OmniStudio - UPDATED FOR HIGHLIGHT CARDS ---
     public static String aiNotes(String componentName, String diff, String rawJson) {
         String prompt =
-            'You are a senior Salesforce OmniStudio reviewer analyzing changes to an OmniScript/FlexCard/DataRaptor component. ' +
-            'Based on the DIFF provided, produce concise, actionable release notes in HTML format. ' +
-            'CRITICAL: For element-level changes, identify:\n' +
-            '1. WHICH step contains the element (e.g., "Step1", "Step2")\n' +
-            '2. WHICH element changed (e.g., "Time1", "Text2", "Checkbox3")\n' +
-            '3. WHAT the element does (e.g., "collects appointment time", "captures customer name")\n' +
-            '4. HOW this impacts the USER (e.g., "users can no longer select a time", "validation is now stricter")\n' +
-            '5. WHAT business process is affected (e.g., "appointment booking flow", "address update process")\n\n' +
-            'Example: "Removed Time1 element from Step1 (Appointment Details). Users can no longer select appointment times during onboarding. ' +
-            'This may require updating the downstream scheduling system."\n\n' +
-            'Use only these tags: <p>, <ul>, <li>, <strong>, <code>. ' +
-            'Structure your response:\n' +
-            '• Summary: What changed (step + element names)\n' +
-            '• Impact: Functional changes to user experience and data flow\n' +
-            '• Risks: Breaking changes, data integrity issues\n' +
-            '• Test Ideas: Specific scenarios to validate\n\n' +
-            'Keep under 200 words. Be specific about steps and elements.\n\n' +
+            'You are a senior Salesforce OmniStudio developer reviewing component changes. ' +
+            'Analyze the DIFF and provide ULTRA-CONCISE bullet points for busy developers.\n\n' +
+            'CRITICAL FORMAT REQUIREMENTS:\n' +
+            '1. Return ONLY HTML using these tags: <div>, <ul>, <li>, <strong>, <span>\n' +
+            '2. Create 3 highlight cards with this EXACT structure:\n' +
+            '<div class="highlight-card">\n' +
+            '  <div class="card-title">🎯 Key Changes</div>\n' +
+            '  <ul>\n' +
+            '    <li>Concise change 1 (max 10 words)</li>\n' +
+            '    <li>Concise change 2</li>\n' +
+            '  </ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card warning">\n' +
+            '  <div class="card-title">⚠️ Risks</div>\n' +
+            '  <ul><li>Risk 1 (max 10 words)</li></ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card success">\n' +
+            '  <div class="card-title">✅ Test This</div>\n' +
+            '  <ul><li>Test scenario 1 (max 10 words)</li></ul>\n' +
+            '</div>\n\n' +
+            'RULES:\n' +
+            '• Each bullet: MAX 10 words\n' +
+            '• Focus on WHAT changed (element names, steps)\n' +
+            '• Mention user impact ONLY if critical\n' +
+            '• NO explanatory text outside cards\n' +
+            '• Be specific: "Removed Time1 from Step2" NOT "removed a field"\n\n' +
             'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff.left(12000)) +
-            '\n\n=== RAW JSON (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
+            '\n\n=== CONTEXT (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
 
+        // HARDCODED API KEY - Replace with your actual key
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                           'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
+        
         Map<String,Object> payload = new Map<String,Object>{
             'contents' => new List<Object>{
                 new Map<String,Object>{
@@ -111,129 +122,27 @@ public with sharing class DV_AINotesUtil {
             System.debug('AI Notes error: ' + e.getMessage());
         }
 
-        // Always append element-level impacts at the end
-        String elemBullets = elementImpactBullets(diff);
-        if(!String.isBlank(html)) return html + elemBullets;
+        if(!String.isBlank(html)) return html;
 
-        // Fallback if callout fails - still show element impacts
+        // Fallback: Simple cards
         Integer adds=0, dels=0;
         for(String line : splitLines(diff)){ 
             if(line!=null && line.startsWith('+ ')) adds++; 
             else if(line!=null && line.startsWith('- ')) dels++; 
         }
-        return '<p><strong>Summary:</strong> Updated <code>' + enc(componentName) + '</code> with ' + adds + ' additions and ' + dels + ' removals.</p>' +
-               '<ul><li><strong>Impact:</strong> Behavior may change in affected branches.</li>' +
-               '<li><strong>Risks:</strong> Data mapping / element flow regressions.</li>' +
-               '<li><strong>Test Ideas:</strong> Validate inputs/outputs and branch paths.</li></ul>' + elemBullets;
-    }
-
-    private static String elementImpactBullets(String diff) {
-        if (String.isBlank(diff)) return '';
         
-        // Extract element changes and generate AI summary
-        List<String> elementChanges = new List<String>();
-        
-        for (String line : diff.split('\n')) {
-            if (line == null) continue;
-            
-            // Detect element-level changes - GENERIC approach
-            Boolean interesting =
-                // Any element array operations
-                line.contains('Elements[') ||
-                line.contains('elements[') ||
-                // Child payload changes (any child element)
-                line.contains('childPayload') ||
-                // PropertySetConfig element changes
-                line.contains('PropertySetConfig.elements') ||
-                line.contains('PropertySetConfig.children') ||
-                // Step references
-                line.contains('Step') && (line.contains('ParentElementName') || line.contains('SequenceNumber')) ||
-                // Element metadata
-                line.contains('ParentElementName') ||
-                line.contains('SequenceNumber') ||
-                line.contains('Level') ||
-                // Type/name changes for any element
-                (line.contains('.type') || line.contains('.name') || line.contains('.label')) &&
-                (line.contains('Added') || line.contains('Changed') || line.contains('Removed'));
-            
-            if (interesting) {
-                elementChanges.add(line);
-            }
-        }
-        
-        if (elementChanges.isEmpty()) return '';
-        
-        // Generate AI functional impact summary
-        String impactSummary = generateElementImpactSummary(elementChanges);
-        
-        if (!String.isBlank(impactSummary)) {
-            return '<ul><li><strong>Element Impacts:</strong></li><li>' + impactSummary + '</li></ul>';
-        }
-        
-        // Fallback: show raw changes if AI fails
-        List<String> pts = new List<String>();
-        for (String line : elementChanges) {
-            String cleaned = line
-                .replace('childPayload.', '')
-                .replace('PropertySetConfig.', '')
-                .replace('elements[', 'Element [')
-                .replace('].', '] → ');
-            
-            if (cleaned.length() > 200) {
-                cleaned = cleaned.substring(0, 197) + '...';
-            }
-            
-            pts.add('<li>' + enc(cleaned) + '</li>');
-            if (pts.size() >= 15) break;
-        }
-        
-        return '<ul><li><strong>Element Impacts:</strong></li>' + String.join(pts, '') + '</ul>';
-    }
-    
-    private static String generateElementImpactSummary(List<String> elementChanges) {
-        if (elementChanges.isEmpty()) return '';
-        
-        // Build concise summary for AI
-        String changesText = String.join(elementChanges, '\n').left(3000);
-        
-        String prompt = 
-            'Analyze these OmniScript/FlexCard element changes and explain the FUNCTIONAL IMPACT in 2-3 sentences. ' +
-            'Focus on: WHICH step/element changed, WHAT functionality is affected, HOW users will experience this. ' +
-            'Be specific about element names and steps. Output plain text only, no HTML tags.\n\n' +
-            'Changes:\n' + changesText;
-        
-        try {
-            String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
-                              'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
-            Map<String,Object> payload = new Map<String,Object>{
-                'contents' => new List<Object>{
-                    new Map<String,Object>{
-                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
-                    }
-                }
-            };
-            
-            HttpRequest req = new HttpRequest();
-            req.setMethod('POST');
-            req.setEndpoint(endpoint);
-            req.setHeader('Content-Type','application/json');
-            req.setTimeout(60000);
-            req.setBody(JSON.serialize(payload));
-            
-            Http http = new Http();
-            HttpResponse res = http.send(req);
-            
-            if (res.getStatusCode() == 200) {
-                String parsed = parseGeminiHtml(res.getBody());
-                if (!String.isBlank(parsed)) {
-                    return enc(parsed.trim());
-                }
-            }
-        } catch (Exception e) {
-            System.debug('Element impact AI generation failed: ' + e.getMessage());
-        }
-        
-        return null;
+        return '<div class="highlight-card">' +
+               '<div class="card-title">🎯 Key Changes</div>' +
+               '<ul><li>' + adds + ' additions, ' + dels + ' removals</li></ul>' +
+               '</div>' +
+               '<div class="highlight-card warning">' +
+               '<div class="card-title">⚠️ Risks</div>' +
+               '<ul><li>Review data mappings and flow logic</li></ul>' +
+               '</div>' +
+               '<div class="highlight-card success">' +
+               '<div class="card-title">✅ Test This</div>' +
+               '<ul><li>Test affected steps and integrations</li></ul>' +
+               '</div>';
     }
 
     // --- AI notes for Apex (kept) ---
@@ -245,8 +154,10 @@ public with sharing class DV_AINotesUtil {
             'Keep under 180 words.\n\nClass: ' + className + '\n\n=== DIFF ===\n' + (diff==null?'':diff) +
             '\n\n=== APEX BODY (truncated) ===\n' + (body==null?'':body.left(8000));
         try{
+            // HARDCODED API KEY
             String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                               'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
+            
             Map<String,Object> payload = new Map<String,Object>{
                 'contents' => new List<Object>{
                     new Map<String,Object>{

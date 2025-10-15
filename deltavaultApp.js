@@ -339,7 +339,7 @@ export default class DeltavaultApp extends LightningElement {
             } else if (page.nextCursor) {
                 this.tlCursor = page.nextCursor;
                 this.lastUsedCursor = currentCursor;
-                } else {
+            } else {
                 this.tlCursor = null;
             }
             
@@ -369,14 +369,12 @@ export default class DeltavaultApp extends LightningElement {
     
     renderColorCodedDiff() {
         this.historyItems.forEach(snap => {
-            // Render detailed diff
             const diffEl = this.template.querySelector(`.diff-viewer[data-diff-id="${snap.id}"]`);
             if (diffEl && snap.diffText && !diffEl.dataset.rendered) {
                 diffEl.innerHTML = this.formatDiff(snap.diffText);
                 diffEl.dataset.rendered = 'true';
             }
             
-            // Render readable summary
             const summaryEl = this.template.querySelector(`[data-summary-id="${snap.id}"]`);
             if (summaryEl && snap.diffText && !summaryEl.dataset.rendered) {
                 summaryEl.innerHTML = this.generateReadableSummary(snap.diffText);
@@ -396,46 +394,68 @@ export default class DeltavaultApp extends LightningElement {
         };
         
         for (let line of lines) {
-            // Extract element names from diff lines
-            if (line.includes('childPayload') && line.includes('"Name"')) {
-                // Extract element name from childPayload
+            if (line.includes('InputFieldName') || line.includes('OutputFieldName')) {
+                if (line.startsWith('+ Added')) {
+                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)[^"]*"([^"]+)"/);
+                    if (fieldMatch) {
+                        changes.added.push(`Field: ${fieldMatch[1]}`);
+                    }
+                } else if (line.startsWith('- Removed')) {
+                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)[^"]*"([^"]+)"/);
+                    if (fieldMatch) {
+                        changes.removed.push(`Field: ${fieldMatch[1]}`);
+                    }
+                } else if (line.startsWith('~ Changed')) {
+                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)/);
+                    if (fieldMatch) {
+                        changes.changed.push('Field mapping');
+                    }
+                }
+            }
+            else if (line.includes('childPayload') && line.includes('"Name"')) {
                 const nameMatch = line.match(/"Name"\s*:\s*"([^"]+)"/);
                 if (nameMatch) {
                     const elementName = nameMatch[1];
                     
                     if (line.startsWith('+ Added')) {
-                        changes.added.push(elementName);
+                        changes.added.push(`Element: ${elementName}`);
                     } else if (line.startsWith('- Removed')) {
-                        changes.removed.push(elementName);
+                        changes.removed.push(`Element: ${elementName}`);
                     }
                 }
-            } else if (line.startsWith('+ Added') && !line.includes('childPayload')) {
-                // Other additions (like properties)
-                const match = line.match(/\+ Added ([A-Za-z0-9_]+)/);
-                if (match && !this.isTechnicalField(match[1])) {
-                    changes.added.push(match[1]);
+            }
+            else if (line.includes('childName') && !line.includes('childPayload')) {
+                if (line.startsWith('+ Added')) {
+                    const nameMatch = line.match(/"childName"\s*:\s*"([^"]+)"/);
+                    if (nameMatch) {
+                        changes.added.push(`Map Item: ${nameMatch[1]}`);
+                    }
+                } else if (line.startsWith('- Removed')) {
+                    const nameMatch = line.match(/"childName"\s*:\s*"([^"]+)"/);
+                    if (nameMatch) {
+                        changes.removed.push(`Map Item: ${nameMatch[1]}`);
+                    }
                 }
-            } else if (line.startsWith('- Removed') && !line.includes('childPayload')) {
-                // Other removals
-                const match = line.match(/\- Removed ([A-Za-z0-9_]+)/);
-                if (match && !this.isTechnicalField(match[1])) {
-                    changes.removed.push(match[1]);
-                }
-            } else if (line.startsWith('~ Changed') && !line.includes('childPayload')) {
-                // Changes
-                const match = line.match(/~ Changed ([A-Za-z0-9_]+)/);
-                if (match && !this.isTechnicalField(match[1])) {
-                    changes.changed.push(match[1]);
+            }
+            else if (line.startsWith('+ Added') || line.startsWith('- Removed') || line.startsWith('~ Changed')) {
+                const match = line.match(/^[+\-~]\s+(?:Added|Removed|Changed)\s+([A-Za-z0-9_\.]+)/);
+                if (match && !this.isTechnicalField(match[1]) && !line.includes('childPayload')) {
+                    const propName = match[1];
+                    if (line.startsWith('+ Added')) {
+                        changes.added.push(propName);
+                    } else if (line.startsWith('- Removed')) {
+                        changes.removed.push(propName);
+                    } else if (line.startsWith('~ Changed')) {
+                        changes.changed.push(propName);
+                    }
                 }
             }
         }
         
-        // Remove duplicates
         changes.added = [...new Set(changes.added)];
         changes.removed = [...new Set(changes.removed)];
         changes.changed = [...new Set(changes.changed)];
         
-        // Build natural language summary
         let html = '';
         
         const totalChanges = changes.added.length + changes.removed.length + changes.changed.length;
@@ -444,9 +464,8 @@ export default class DeltavaultApp extends LightningElement {
             return '<p class="diff-summary-text">No significant changes detected.</p>';
         }
         
-        // Summary text
         const parts = [];
-        if (changes.added.length > 0) parts.push(`<strong>${changes.added.length}</strong> new element${changes.added.length !== 1 ? 's' : ''}`);
+        if (changes.added.length > 0) parts.push(`<strong>${changes.added.length}</strong> addition${changes.added.length !== 1 ? 's' : ''}`);
         if (changes.removed.length > 0) parts.push(`<strong>${changes.removed.length}</strong> removal${changes.removed.length !== 1 ? 's' : ''}`);
         if (changes.changed.length > 0) parts.push(`<strong>${changes.changed.length}</strong> modification${changes.changed.length !== 1 ? 's' : ''}`);
         
@@ -462,7 +481,6 @@ export default class DeltavaultApp extends LightningElement {
         
         html += `<p class="diff-summary-text">${summaryText}</p>`;
         
-        // Detailed list
         html += '<ul class="diff-summary-list">';
         
         if (changes.added.length > 0) {
@@ -470,7 +488,7 @@ export default class DeltavaultApp extends LightningElement {
                 html += `
                     <li class="diff-summary-item added">
                         <span class="change-icon added">✚</span>
-                        <span class="change-text">Added element: <strong>${this.escapeHtml(name)}</strong></span>
+                        <span class="change-text">Added: <strong>${this.escapeHtml(name)}</strong></span>
                     </li>
                 `;
             });
@@ -481,7 +499,7 @@ export default class DeltavaultApp extends LightningElement {
                 html += `
                     <li class="diff-summary-item removed">
                         <span class="change-icon removed">✖</span>
-                        <span class="change-text">Removed element: <strong>${this.escapeHtml(name)}</strong></span>
+                        <span class="change-text">Removed: <strong>${this.escapeHtml(name)}</strong></span>
                     </li>
                 `;
             });
@@ -492,7 +510,7 @@ export default class DeltavaultApp extends LightningElement {
                 html += `
                     <li class="diff-summary-item changed">
                         <span class="change-icon changed">⟳</span>
-                        <span class="change-text">Modified element: <strong>${this.escapeHtml(name)}</strong></span>
+                        <span class="change-text">Modified: <strong>${this.escapeHtml(name)}</strong></span>
                     </li>
                 `;
             });
@@ -505,9 +523,13 @@ export default class DeltavaultApp extends LightningElement {
     
     isTechnicalField(fieldName) {
         const technicalFields = [
-            'childPayload', 'childTag', 'childName', 'childObject',
+            'childPayload', 'childPayloads', 'childTag', 'childName', 'childNames', 'childObject',
             'PropertySetConfig', 'SequenceNumber', 'Level', 'ParentElementName',
-            'OmniProcessVersionNumber', 'IsActive', 'Active'
+            'OmniProcessVersionNumber', 'IsActive', 'Active',
+            'GlobalKey', 'FormulaSequence', 'InputObjectQuerySequence', 'OutputCreationSequence',
+            'FilterGroup', 'IsDeleted', 'IsDisabled', 'IsLocked', 'IsRequiredForUpsert', 'IsUpsertKey',
+            'MayEdit', 'SystemModstamp', 'LastModifiedDate', 'LastReferencedDate', 'LastViewedDate',
+            'CreatedDate', 'CreatedById', 'LastModifiedById'
         ];
         return technicalFields.includes(fieldName);
     }

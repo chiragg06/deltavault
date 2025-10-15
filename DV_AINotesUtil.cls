@@ -25,17 +25,43 @@ public with sharing class DV_AINotesUtil {
         Map<String,Object> b = (Map<String,Object>) JSON.deserializeUntyped(newJson);
         return String.join(compareRecursive(a, b, ''), '\n');
     }
+    
     private static List<String> compareRecursive(Map<String,Object> a, Map<String,Object> b, String prefix) {
-        List<String> out = new List<String>(); Set<String> keys = new Set<String>();
-        if (a != null) keys.addAll(a.keySet()); if (b != null) keys.addAll(b.keySet());
+        List<String> out = new List<String>(); 
+        Set<String> keys = new Set<String>();
+        if (a != null) keys.addAll(a.keySet()); 
+        if (b != null) keys.addAll(b.keySet());
+        
         for (String k : keys) {
             String path = prefix == '' ? k : prefix + '.' + k;
             Boolean hasA = (a != null && a.containsKey(k)), hasB = (b != null && b.containsKey(k));
-            if (!hasA && hasB) { out.add('+ Added ' + path + ' = ' + JSON.serialize(b.get(k))); continue; }
-            if (hasA && !hasB) { out.add('- Removed ' + path + ' (was ' + JSON.serialize(a.get(k)) + ')'); continue; }
+            
+            // Skip childPayloads array - handle specially
+            if (k == 'childPayloads') {
+                if (hasA && hasB) {
+                    out.addAll(compareChildPayloads((List<Object>)a.get(k), (List<Object>)b.get(k), path));
+                }
+                continue;
+            }
+            
+            // Skip these metadata fields
+            if (k == 'childNames' || k == 'childTag' || k == 'childObject') {
+                continue;
+            }
+            
+            if (!hasA && hasB) { 
+                out.add('+ Added ' + path + ' = ' + JSON.serialize(b.get(k))); 
+                continue; 
+            }
+            if (hasA && !hasB) { 
+                out.add('- Removed ' + path + ' (was ' + JSON.serialize(a.get(k)) + ')'); 
+                continue; 
+            }
+            
             Object av = a.get(k), bv = b.get(k);
             if (av == null && bv == null) continue;
             if (String.valueOf(av) == String.valueOf(bv)) continue;
+            
             if (av instanceof Map<String,Object> && bv instanceof Map<String,Object>)
                 out.addAll(compareRecursive((Map<String,Object>)av,(Map<String,Object>)bv,path));
             else if (av instanceof List<Object> && bv instanceof List<Object>)
@@ -45,14 +71,78 @@ public with sharing class DV_AINotesUtil {
         }
         return out;
     }
+    
+    // Special handler for childPayloads - compare by Name field
+    private static List<String> compareChildPayloads(List<Object> oldList, List<Object> newList, String prefix) {
+        List<String> out = new List<String>();
+        
+        // Build maps by Name
+        Map<String, Map<String,Object>> oldByName = new Map<String, Map<String,Object>>();
+        Map<String, Map<String,Object>> newByName = new Map<String, Map<String,Object>>();
+        
+        if (oldList != null) {
+            for (Object item : oldList) {
+                if (item instanceof Map<String,Object>) {
+                    Map<String,Object> m = (Map<String,Object>)item;
+                    String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : null;
+                    if (name != null) oldByName.put(name, m);
+                }
+            }
+        }
+        
+        if (newList != null) {
+            for (Object item : newList) {
+                if (item instanceof Map<String,Object>) {
+                    Map<String,Object> m = (Map<String,Object>)item;
+                    String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : null;
+                    if (name != null) newByName.put(name, m);
+                }
+            }
+        }
+        
+        // Find added elements
+        for (String name : newByName.keySet()) {
+            if (!oldByName.containsKey(name)) {
+                out.add('+ Added childPayload with Name "' + name + '"');
+            }
+        }
+        
+        // Find removed elements
+        for (String name : oldByName.keySet()) {
+            if (!newByName.containsKey(name)) {
+                out.add('- Removed childPayload with Name "' + name + '"');
+            }
+        }
+        
+        // Find changed elements
+        for (String name : newByName.keySet()) {
+            if (oldByName.containsKey(name)) {
+                Map<String,Object> oldItem = oldByName.get(name);
+                Map<String,Object> newItem = newByName.get(name);
+                
+                if (String.valueOf(oldItem) != String.valueOf(newItem)) {
+                    List<String> itemDiff = compareRecursive(oldItem, newItem, 'childPayload[' + name + ']');
+                    if (!itemDiff.isEmpty()) {
+                        out.addAll(itemDiff);
+                    }
+                }
+            }
+        }
+        
+        return out;
+    }
+    
     private static List<String> compareList(List<Object> a, List<Object> b, String prefix) {
-        List<String> out = new List<String>(); Integer max = Math.max(a == null ? 0 : a.size(), b == null ? 0 : b.size());
+        List<String> out = new List<String>(); 
+        Integer max = Math.max(a == null ? 0 : a.size(), b == null ? 0 : b.size());
         for (Integer i = 0; i < max; i++) {
-            String path = prefix + '[' + i + ']'; Boolean hasA = (a != null && i < a.size()), hasB = (b != null && i < b.size());
+            String path = prefix + '[' + i + ']'; 
+            Boolean hasA = (a != null && i < a.size()), hasB = (b != null && i < b.size());
             if (!hasA && hasB) out.add('+ Added ' + path + ' = ' + JSON.serialize(b[i]));
             else if (hasA && !hasB) out.add('- Removed ' + path + ' (was ' + JSON.serialize(a[i]) + ')');
             else if (hasA && hasB) {
-                Object av = a[i], bv = b[i]; if (String.valueOf(av) == String.valueOf(bv)) continue;
+                Object av = a[i], bv = b[i]; 
+                if (String.valueOf(av) == String.valueOf(bv)) continue;
                 if (av instanceof Map<String,Object> && bv instanceof Map<String,Object>)
                     out.addAll(compareRecursive((Map<String,Object>)av,(Map<String,Object>)bv,path));
                 else if (av instanceof List<Object> && bv instanceof List<Object>)

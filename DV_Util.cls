@@ -45,14 +45,75 @@ public with sharing class DV_Util {
         return null;
     }
 
-    // REMOVED stripVersion - no longer used
-    // BaseName will just be the FullName (no stripping on backend)
     public static String stripVersion(String full) {
-        // Keep original - no stripping
         return full != null ? full : '';
     }
 
-    // ---- JSON helpers -------------------------------------------------------
+    // ADDED: Recursively sanitize Map/List structures before JSON serialization
+    public static Object sanitizeForJsonSerialization(Object obj) {
+        if (obj == null) return null;
+        
+        if (obj instanceof String) {
+            String str = (String)obj;
+            
+            // Replace control characters with spaces or remove them
+            // JSON.serialize() will handle the actual escaping, we just need to remove illegal chars
+            str = str.replace('\u0000', ''); // null
+            str = str.replace('\u0001', ''); 
+            str = str.replace('\u0002', '');
+            str = str.replace('\u0003', '');
+            str = str.replace('\u0004', '');
+            str = str.replace('\u0005', '');
+            str = str.replace('\u0006', '');
+            str = str.replace('\u0007', '');
+            str = str.replace('\u0008', ''); // backspace
+            // Keep \u0009 (tab), \u000A (newline), \u000D (carriage return) - JSON.serialize handles these
+            str = str.replace('\u000B', ''); // vertical tab
+            str = str.replace('\u000C', ''); // form feed
+            str = str.replace('\u000E', '');
+            str = str.replace('\u000F', '');
+            str = str.replace('\u0010', '');
+            str = str.replace('\u0011', '');
+            str = str.replace('\u0012', '');
+            str = str.replace('\u0013', '');
+            str = str.replace('\u0014', '');
+            str = str.replace('\u0015', '');
+            str = str.replace('\u0016', '');
+            str = str.replace('\u0017', '');
+            str = str.replace('\u0018', '');
+            str = str.replace('\u0019', '');
+            str = str.replace('\u001A', '');
+            str = str.replace('\u001B', ''); // escape
+            str = str.replace('\u001C', '');
+            str = str.replace('\u001D', '');
+            str = str.replace('\u001E', '');
+            str = str.replace('\u001F', '');
+            
+            return str;
+        }
+        
+        if (obj instanceof Map<String,Object>) {
+            Map<String,Object> inputMap = (Map<String,Object>)obj;
+            Map<String,Object> cleaned = new Map<String,Object>();
+            for (String key : inputMap.keySet()) {
+                cleaned.put(key, sanitizeForJsonSerialization(inputMap.get(key)));
+            }
+            return cleaned;
+        }
+        
+        if (obj instanceof List<Object>) {
+            List<Object> inputList = (List<Object>)obj;
+            List<Object> cleaned = new List<Object>();
+            for (Object item : inputList) {
+                cleaned.add(sanitizeForJsonSerialization(item));
+            }
+            return cleaned;
+        }
+        
+        // For primitives (Integer, Boolean, Decimal, etc.), return as-is
+        return obj;
+    }
+
     // ADDED: Sanitize control characters that break JSON
     private static String sanitizeForJson(String str) {
         if (String.isBlank(str)) return str;
@@ -75,7 +136,6 @@ public with sharing class DV_Util {
     public static String normalizeJson(String maybeJson, Integer max) {
         if (String.isBlank(maybeJson)) return null;
         
-        // ADDED: Sanitize first
         maybeJson = sanitizeForJson(maybeJson);
         
         try {
@@ -83,7 +143,6 @@ public with sharing class DV_Util {
             Object sorted = sortJson(u);
             String pretty = JSON.serializePretty(sorted);
             
-            // ADDED: Sanitize output too
             pretty = sanitizeForJson(pretty);
             
             if (max != null && pretty.length() > max) {
@@ -100,14 +159,16 @@ public with sharing class DV_Util {
     
     private static Object sortJson(Object val) {
         if (val instanceof Map<String,Object>) {
-            Map<String,Object> m = (Map<String,Object>)val;
-            List<String> ks = new List<String>(m.keySet()); ks.sort();
+            Map<String,Object> mapVal = (Map<String,Object>)val;
+            List<String> ks = new List<String>(mapVal.keySet()); 
+            ks.sort();
             Map<String,Object> out = new Map<String,Object>();
-            for (String k : ks) out.put(k, sortJson(m.get(k)));
+            for (String k : ks) out.put(k, sortJson(mapVal.get(k)));
             return out;
         } else if (val instanceof List<Object>) {
-            List<Object> a = (List<Object>)val, out = new List<Object>();
-            for (Object o : a) out.add(sortJson(o));
+            List<Object> listVal = (List<Object>)val;
+            List<Object> out = new List<Object>();
+            for (Object o : listVal) out.add(sortJson(o));
             return out;
         }
         return val;
@@ -198,8 +259,31 @@ public with sharing class DV_Util {
     }
     
     private static void normIfPresent(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field, Integer max){
-        if (f.containsKey(field) && rec.get(field) != null)
-            out.put(field, normalizeJson(String.valueOf(rec.get(field)), max));
+        if (f.containsKey(field) && rec.get(field) != null) {
+            String rawValue = String.valueOf(rec.get(field));
+            // CRITICAL: Remove control characters BEFORE normalizing JSON
+            rawValue = sanitizeStringValue(rawValue);
+            out.put(field, normalizeJson(rawValue, max));
+        }
+    }
+    
+    // Remove control characters from string values
+    private static String sanitizeStringValue(String str) {
+        if (String.isBlank(str)) return str;
+        
+        // Remove control characters that break JSON parsing
+        return str
+            .replace('\u0000', '') .replace('\u0001', '') .replace('\u0002', '')
+            .replace('\u0003', '') .replace('\u0004', '') .replace('\u0005', '')
+            .replace('\u0006', '') .replace('\u0007', '') .replace('\u0008', '')
+            // Keep tab, newline, carriage return - they're valid in JSON strings
+            .replace('\u000B', '') .replace('\u000C', '')
+            .replace('\u000E', '') .replace('\u000F', '') .replace('\u0010', '')
+            .replace('\u0011', '') .replace('\u0012', '') .replace('\u0013', '')
+            .replace('\u0014', '') .replace('\u0015', '') .replace('\u0016', '')
+            .replace('\u0017', '') .replace('\u0018', '') .replace('\u0019', '')
+            .replace('\u001A', '') .replace('\u001B', '') .replace('\u001C', '')
+            .replace('\u001D', '') .replace('\u001E', '') .replace('\u001F', '');
     }
 
     // ---- Describe-aware field list -----------------------------------------

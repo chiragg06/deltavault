@@ -1,8 +1,8 @@
 public with sharing class DV_Poller implements Schedulable {
     
     private static final Integer DEFAULT_LOOKBACK_MINUTES = 20;
-    private static final Integer MAX_DIFF_LENGTH = 30000; // Safe limit for Long Text Area
-    private static final Integer MAX_JSON_LENGTH = 30000; // Safe limit for RawJSON
+    private static final Integer MAX_DIFF_LENGTH = 30000;
+    private static final Integer MAX_JSON_LENGTH = 30000;
     
     public void execute(SchedulableContext sc) {
         runSince(System.now().addMinutes(-DEFAULT_LOOKBACK_MINUTES));
@@ -14,17 +14,14 @@ public with sharing class DV_Poller implements Schedulable {
     }
     
     private static void runSince(Datetime since) {
-        // Process parent objects
         processParent('OmniUiCard', since);
         processParent('OmniProcess', since);
         processParent('OmniDataTransform', since);
         
-        // Process child elements - CRITICAL for element-level tracking
         processChild('OmniProcessElement', 'OmniProcessId', 'OmniProcess', 'Element', since);
         processChild('OmniDataTransformItem', 'OmniDataTransformationId', 'OmniDataTransform', 'DR Map Item', since);
     }
     
-    // Process parent objects (FlexCard, OmniScript, DataRaptor)
     private static void processParent(String api, Datetime since) {
         String soql = 'SELECT ' + DV_Util.fieldListFor(api) + ' FROM ' + api +
                      ' WHERE LastModifiedDate >= :since ORDER BY LastModifiedDate DESC LIMIT 10000';
@@ -66,28 +63,47 @@ public with sharing class DV_Poller implements Schedulable {
     
     // Process child objects (Elements, DataRaptor Items)
     private static void processChild(String childApi, String parentLookup, String parentApi, String childTag, Datetime since) {
+        // Find MODIFIED children
         String soqlC = 'SELECT ' + DV_Util.fieldListFor(childApi) + ' FROM ' + childApi +
                       ' WHERE LastModifiedDate >= :since ORDER BY LastModifiedDate DESC LIMIT 10000';
         
-        List<SObject> kids = Database.query(soqlC);
-        if (kids.isEmpty()) return;
+        List<SObject> modifiedKids = Database.query(soqlC);
+        if (modifiedKids.isEmpty()) return;
         
+        // Get affected parent IDs
         Set<Id> pids = new Set<Id>();
-        for (SObject c : kids) {
+        for (SObject c : modifiedKids) {
             if (c.get(parentLookup) != null) pids.add((Id)c.get(parentLookup));
         }
         if (pids.isEmpty()) return;
         
+        // Fetch parent records
         String soqlP = 'SELECT ' + DV_Util.fieldListFor(parentApi) + ' FROM ' + parentApi + ' WHERE Id IN :pids';
         Map<Id,SObject> parents = new Map<Id,SObject>(Database.query(soqlP));
         
+        // CRITICAL FIX: Fetch ALL children for these parents (not just modified ones)
+        String soqlAllChildren = 'SELECT ' + DV_Util.fieldListFor(childApi) + ' FROM ' + childApi +
+                                ' WHERE ' + parentLookup + ' IN :pids ORDER BY Name ASC';
+        List<SObject> allKids = Database.query(soqlAllChildren);
+        
         Datetime nowTs = System.now();
+        
+        // GROUP ALL children by parent
+        Map<Id, List<SObject>> allChildrenByParent = new Map<Id, List<SObject>>();
+        for (SObject c : allKids) {
+            Id pid = (Id)c.get(parentLookup);
+            if (!allChildrenByParent.containsKey(pid)) {
+                allChildrenByParent.put(pid, new List<SObject>());
+            }
+            allChildrenByParent.get(pid).add(c);
+        }
+        
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, String> childNameBy = new Map<String, String>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
         
-        for (SObject c : kids) {
-            Id pid = (Id)c.get(parentLookup);
+        // Process each affected parent with ALL its children
+        for (Id pid : pids) {
             SObject p = parents.get(pid);
             if (p == null) continue;
             
@@ -96,15 +112,33 @@ public with sharing class DV_Poller implements Schedulable {
             String base = DV_Util.stripVersion(full);
             
             Map<String,Object> parentAfter = DV_Util.projectInteresting(p);
-            Map<String,Object> childPayload = DV_Util.projectInteresting(c);
+            
+            // Add ALL children (not just modified) to get accurate snapshot
+            List<Map<String,Object>> childPayloads = new List<Map<String,Object>>();
+            List<String> childNames = new List<String>();
+            
+            List<SObject> allChildren = allChildrenByParent.get(pid);
+            if (allChildren != null) {
+                for (SObject c : allChildren) {
+                    Map<String,Object> childPayload = DV_Util.projectInteresting(c);
+                    childPayloads.add(childPayload);
+                    childNames.add(String.valueOf(c.get('Name')));
+                }
+            }
             
             parentAfter.put('childObject', childApi);
-            parentAfter.put('childName', String.valueOf(c.get('Name')));
             parentAfter.put('childTag', childTag);
-            parentAfter.put('childPayload', childPayload);
+            parentAfter.put('childPayloads', childPayloads);
+            parentAfter.put('childNames', childNames);
             
             afterBy.put(full, parentAfter);
-            childNameBy.put(full, String.valueOf(c.get('Name')));
+            
+            // Truncate child names to fit 255 char limit (leave room for prefix)
+            String childNamesList = String.join(childNames, ', ');
+            if (childNamesList.length() > 200) {
+                childNamesList = childNamesList.substring(0, 197) + '...';
+            }
+            childNameBy.put(full, childNamesList);
             
             OmniComponent__c oc = new OmniComponent__c();
             oc.FullName__c = full;
@@ -122,7 +156,6 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', childTag, childNameBy);
     }
     
-    // FIXED: Truncate diffs that are too large
     private static String truncateDiff(String diff) {
         if (String.isBlank(diff)) return diff;
         if (diff.length() <= MAX_DIFF_LENGTH) return diff;
@@ -131,7 +164,6 @@ public with sharing class DV_Poller implements Schedulable {
                '\n\n... [TRUNCATED - diff too large, ' + diff.length() + ' chars total]';
     }
     
-    // FIXED: Truncate raw JSON that's too large
     private static String truncateRawJson(String rawJson) {
         if (String.isBlank(rawJson)) return rawJson;
         if (rawJson.length() <= MAX_JSON_LENGTH) return rawJson;
@@ -140,7 +172,6 @@ public with sharing class DV_Poller implements Schedulable {
                '\n... [TRUNCATED - JSON too large, ' + rawJson.length() + ' chars total]';
     }
     
-    // Upsert components and create snapshots with version awareness
     private static void upsertAndSnapshot(
         Map<String, OmniComponent__c> comps,
         Map<String, Map<String,Object>> afterJsonByFull,
@@ -151,7 +182,6 @@ public with sharing class DV_Poller implements Schedulable {
     ) {
         if (comps.isEmpty()) return;
         
-        // Upsert components by FullName
         Map<String,Id> nameToId = new Map<String,Id>();
         for (OmniComponent__c e : [SELECT Id, FullName__c FROM OmniComponent__c WHERE FullName__c IN :comps.keySet()]) {
             nameToId.put(e.FullName__c, e.Id);
@@ -173,13 +203,11 @@ public with sharing class DV_Poller implements Schedulable {
         if (!ins.isEmpty()) insert ins;
         if (!upd.isEmpty()) update upd;
         
-        // Refresh IDs
         nameToId.clear();
         for (OmniComponent__c e : [SELECT Id, FullName__c FROM OmniComponent__c WHERE FullName__c IN :comps.keySet()]) {
             nameToId.put(e.FullName__c, e.Id);
         }
         
-        // Build latest RAW per (component, BaseName, Version) for version-aware diffs
         Map<String,String> prevRawByKey = new Map<String,String>();
         
         for (OmniSnapshot__c s : [
@@ -197,7 +225,6 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        // Create snapshots - ALWAYS create for baseline ingestion
         List<OmniSnapshot__c> toInsert = new List<OmniSnapshot__c>();
         
         for (String fn : nameToId.keySet()) {
@@ -205,26 +232,40 @@ public with sharing class DV_Poller implements Schedulable {
             String base = DV_Util.stripVersion(fn);
             Decimal v = DV_Util.sniffVersion(afterM);
             
-            String prettyAfter = JSON.serializePretty(afterM);
+            // Try to serialize - control chars should already be removed by projectInteresting()
+            String compactJson;
+            try {
+                compactJson = JSON.serialize(afterM);
+            } catch (Exception e) {
+                System.debug('JSON serialization failed for ' + fn + ': ' + e.getMessage());
+                continue; // Skip this component if serialization fails
+            }
+            
+            // Parse back and re-serialize as pretty
+            String prettyAfter;
+            try {
+                Object parsed = JSON.deserializeUntyped(compactJson);
+                prettyAfter = JSON.serializePretty(parsed);
+            } catch (Exception e) {
+                prettyAfter = compactJson;
+            }
+            
             String versionKey = base + '|' + (v != null ? String.valueOf(v) : '');
             String diffKey = nameToId.get(fn) + '|' + versionKey;
             String prev = prevRawByKey.get(diffKey);
             
-            // Calculate diff
             String diff = DV_AINotesUtil.deepDiff(
                 String.isBlank(prev) ? '{}' : prev,
                 prettyAfter
             );
             
-            // FIXED: Always create snapshot for baseline, but skip if no changes for ongoing polling
             Boolean isBaseline = (actor == 'Baseline' || actor == 'Manual Baseline');
             if (!isBaseline && String.isBlank(diff)) {
-                continue; // Skip if no changes during regular polling
+                continue;
             }
             
-            // FIXED: Truncate both diff and raw JSON if too large
             String safeDiff = truncateDiff(diff);
-            String safeRawJson = truncateRawJson(JSON.serialize(afterM));
+            String safeRawJson = truncateRawJson(compactJson);
             
             OmniSnapshot__c snap = new OmniSnapshot__c();
             snap.OmniComponent__c = nameToId.get(fn);
@@ -242,7 +283,16 @@ public with sharing class DV_Poller implements Schedulable {
             
             if (childTag != null) {
                 String cn = childNameBy != null ? childNameBy.get(fn) : null;
-                snap.Source__c = 'Child: ' + childTag + (String.isBlank(cn) ? '' : ' • ' + cn);
+                String sourceText = 'Child: ' + childTag;
+                if (!String.isBlank(cn)) {
+                    // Ensure total Source__c stays under 255 chars
+                    Integer maxChildNameLength = 255 - sourceText.length() - 3; // " • " = 3 chars
+                    if (cn.length() > maxChildNameLength) {
+                        cn = cn.substring(0, maxChildNameLength - 3) + '...';
+                    }
+                    sourceText += ' • ' + cn;
+                }
+                snap.Source__c = sourceText;
             } else {
                 snap.Source__c = isBaseline ? actor : 'Poller';
             }
@@ -264,7 +314,6 @@ public with sharing class DV_Poller implements Schedulable {
         }
     }
     
-    // Manual baseline ingestion for all versions of a component
     @AuraEnabled
     public static void ingestBaseAllVersions(String family, String baseName) {
         Datetime nowTs = System.now();
@@ -319,7 +368,6 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null);
     }
     
-    // Baseline all components in a family
     @AuraEnabled
     public static void ingestAllByFamily(String family) {
         Datetime nowTs = System.now();

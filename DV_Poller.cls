@@ -61,34 +61,28 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', null, null);
     }
     
-    // Process child objects (Elements, DataRaptor Items)
     private static void processChild(String childApi, String parentLookup, String parentApi, String childTag, Datetime since) {
-        // Find MODIFIED children
         String soqlC = 'SELECT ' + DV_Util.fieldListFor(childApi) + ' FROM ' + childApi +
                       ' WHERE LastModifiedDate >= :since ORDER BY LastModifiedDate DESC LIMIT 10000';
         
         List<SObject> modifiedKids = Database.query(soqlC);
         if (modifiedKids.isEmpty()) return;
         
-        // Get affected parent IDs
         Set<Id> pids = new Set<Id>();
         for (SObject c : modifiedKids) {
             if (c.get(parentLookup) != null) pids.add((Id)c.get(parentLookup));
         }
         if (pids.isEmpty()) return;
         
-        // Fetch parent records
         String soqlP = 'SELECT ' + DV_Util.fieldListFor(parentApi) + ' FROM ' + parentApi + ' WHERE Id IN :pids';
         Map<Id,SObject> parents = new Map<Id,SObject>(Database.query(soqlP));
         
-        // CRITICAL FIX: Fetch ALL children for these parents (not just modified ones)
         String soqlAllChildren = 'SELECT ' + DV_Util.fieldListFor(childApi) + ' FROM ' + childApi +
                                 ' WHERE ' + parentLookup + ' IN :pids ORDER BY Name ASC';
         List<SObject> allKids = Database.query(soqlAllChildren);
         
         Datetime nowTs = System.now();
         
-        // GROUP ALL children by parent
         Map<Id, List<SObject>> allChildrenByParent = new Map<Id, List<SObject>>();
         for (SObject c : allKids) {
             Id pid = (Id)c.get(parentLookup);
@@ -102,7 +96,6 @@ public with sharing class DV_Poller implements Schedulable {
         Map<String, String> childNameBy = new Map<String, String>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
         
-        // Process each affected parent with ALL its children
         for (Id pid : pids) {
             SObject p = parents.get(pid);
             if (p == null) continue;
@@ -113,7 +106,6 @@ public with sharing class DV_Poller implements Schedulable {
             
             Map<String,Object> parentAfter = DV_Util.projectInteresting(p);
             
-            // Add ALL children (not just modified) to get accurate snapshot
             List<Map<String,Object>> childPayloads = new List<Map<String,Object>>();
             List<String> childNames = new List<String>();
             
@@ -133,7 +125,6 @@ public with sharing class DV_Poller implements Schedulable {
             
             afterBy.put(full, parentAfter);
             
-            // Truncate child names to fit 255 char limit (leave room for prefix)
             String childNamesList = String.join(childNames, ', ');
             if (childNamesList.length() > 200) {
                 childNamesList = childNamesList.substring(0, 197) + '...';
@@ -156,20 +147,9 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', childTag, childNameBy);
     }
     
-    private static String truncateDiff(String diff) {
-        if (String.isBlank(diff)) return diff;
-        if (diff.length() <= MAX_DIFF_LENGTH) return diff;
-        
-        return diff.substring(0, MAX_DIFF_LENGTH) + 
-               '\n\n... [TRUNCATED - diff too large, ' + diff.length() + ' chars total]';
-    }
-    
-    private static String truncateRawJson(String rawJson) {
-        if (String.isBlank(rawJson)) return rawJson;
-        if (rawJson.length() <= MAX_JSON_LENGTH) return rawJson;
-        
-        return rawJson.substring(0, MAX_JSON_LENGTH) + 
-               '\n... [TRUNCATED - JSON too large, ' + rawJson.length() + ' chars total]';
+    private static String truncate(String txt, Integer max) {
+        if (String.isBlank(txt) || txt.length() <= max) return txt;
+        return txt.substring(0, max) + '\n\n... [TRUNCATED - ' + txt.length() + ' chars total]';
     }
     
     private static void upsertAndSnapshot(
@@ -209,7 +189,6 @@ public with sharing class DV_Poller implements Schedulable {
         }
         
         Map<String,String> prevRawByKey = new Map<String,String>();
-        
         for (OmniSnapshot__c s : [
             SELECT Id, OmniComponent__c, BaseName__c, RawJSON__c, Version__c, ModifiedAt__c
             FROM OmniSnapshot__c
@@ -232,20 +211,20 @@ public with sharing class DV_Poller implements Schedulable {
             String base = DV_Util.stripVersion(fn);
             Decimal v = DV_Util.sniffVersion(afterM);
             
-            // Try to serialize - control chars should already be removed by projectInteresting()
+            // Serialize to JSON - should work now since all strings are pre-cleaned
             String compactJson;
             try {
                 compactJson = JSON.serialize(afterM);
             } catch (Exception e) {
                 System.debug('JSON serialization failed for ' + fn + ': ' + e.getMessage());
-                continue; // Skip this component if serialization fails
+                System.debug('Keys in Map: ' + afterM.keySet());
+                continue; // Skip this component
             }
             
-            // Parse back and re-serialize as pretty
+            // Pretty print
             String prettyAfter;
             try {
-                Object parsed = JSON.deserializeUntyped(compactJson);
-                prettyAfter = JSON.serializePretty(parsed);
+                prettyAfter = JSON.serializePretty(JSON.deserializeUntyped(compactJson));
             } catch (Exception e) {
                 prettyAfter = compactJson;
             }
@@ -260,20 +239,15 @@ public with sharing class DV_Poller implements Schedulable {
             );
             
             Boolean isBaseline = (actor == 'Baseline' || actor == 'Manual Baseline');
-            if (!isBaseline && String.isBlank(diff)) {
-                continue;
-            }
-            
-            String safeDiff = truncateDiff(diff);
-            String safeRawJson = truncateRawJson(compactJson);
+            if (!isBaseline && String.isBlank(diff)) continue;
             
             OmniSnapshot__c snap = new OmniSnapshot__c();
             snap.OmniComponent__c = nameToId.get(fn);
             snap.ModifiedAt__c = nowTs;
             snap.ActorName__c = actor;
             snap.ChangeType__c = String.isBlank(prev) ? 'Insert' : 'Update';
-            snap.RawJSON__c = safeRawJson;
-            snap.DiffToPrev__c = String.isBlank(safeDiff) ? 'Initial baseline snapshot' : safeDiff;
+            snap.RawJSON__c = truncate(compactJson, MAX_JSON_LENGTH);
+            snap.DiffToPrev__c = String.isBlank(diff) ? 'Initial baseline snapshot' : truncate(diff, MAX_DIFF_LENGTH);
             snap.BaseName__c = base;
             
             if (v != null) {
@@ -285,8 +259,7 @@ public with sharing class DV_Poller implements Schedulable {
                 String cn = childNameBy != null ? childNameBy.get(fn) : null;
                 String sourceText = 'Child: ' + childTag;
                 if (!String.isBlank(cn)) {
-                    // Ensure total Source__c stays under 255 chars
-                    Integer maxChildNameLength = 255 - sourceText.length() - 3; // " • " = 3 chars
+                    Integer maxChildNameLength = 255 - sourceText.length() - 3;
                     if (cn.length() > maxChildNameLength) {
                         cn = cn.substring(0, maxChildNameLength - 3) + '...';
                     }

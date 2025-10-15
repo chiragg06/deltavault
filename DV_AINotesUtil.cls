@@ -1,28 +1,22 @@
 public with sharing class DV_AINotesUtil {
 
-    // --- simple unified line diff (for fallback) ---
-    public static String unifiedDiff(String oldText, String newText) {
-        List<String> o = splitLines(oldText), n = splitLines(newText);
-        Integer i=0, j=0; List<String> out = new List<String>();
-        out.add('--- OLD'); out.add('+++ NEW');
-        while(i<o.size() || j<n.size()){
-            if(i<o.size() && j<n.size() && String.valueOf(o[i])==String.valueOf(n[j])){ i++; j++; continue; }
-            if(i<o.size()){ out.add('- ' + (o[i]==null?'':o[i])); i++; }
-            if(j<n.size()){ out.add('+ ' + (n[j]==null?'':n[j])); j++; }
-        }
-        return String.join(out, '\n');
-    }
     private static List<String> splitLines(String s){
         if(s==null) return new List<String>();
         String norm = s.replace('\r\n','\n');
         return new List<String>(norm.split('\n', -1));
     }
 
-    // --- deep JSON diff (maps + arrays) ---
     public static String deepDiff(String oldJson, String newJson) {
         if (String.isBlank(newJson)) return '';
-        Map<String,Object> a = (Map<String,Object>) JSON.deserializeUntyped(String.isBlank(oldJson) ? '{}' : oldJson);
-        Map<String,Object> b = (Map<String,Object>) JSON.deserializeUntyped(newJson);
+        
+        Map<String,Object> a, b;
+        try {
+            a = (Map<String,Object>) JSON.deserializeUntyped(String.isBlank(oldJson) ? '{}' : oldJson);
+            b = (Map<String,Object>) JSON.deserializeUntyped(newJson);
+        } catch (Exception e) {
+            return 'Unable to parse JSON for comparison';
+        }
+        
         return String.join(compareRecursive(a, b, ''), '\n');
     }
     
@@ -32,29 +26,49 @@ public with sharing class DV_AINotesUtil {
         if (a != null) keys.addAll(a.keySet()); 
         if (b != null) keys.addAll(b.keySet());
         
+        // CRITICAL: Skip metadata fields that add noise to diffs
+        Set<String> skipFields = new Set<String>{
+            'childNames', 'childTag', 'childObject',
+            'Language', 'VersionNumber', 'OmniScriptVersionNumber', 'OmniProcessVersionNumber',
+            'SubType', 'Type', 'IsActive', 'Active'
+        };
+        
         for (String k : keys) {
+            // Skip metadata fields at root level
+            if (prefix == '' && skipFields.contains(k)) continue;
+            
             String path = prefix == '' ? k : prefix + '.' + k;
             Boolean hasA = (a != null && a.containsKey(k)), hasB = (b != null && b.containsKey(k));
             
-            // Skip childPayloads array - handle specially
+            // Special handling for childPayloads - this is where elements are added/removed
             if (k == 'childPayloads') {
                 if (hasA && hasB) {
                     out.addAll(compareChildPayloads((List<Object>)a.get(k), (List<Object>)b.get(k), path));
+                } else if (!hasA && hasB) {
+                    // New childPayloads added
+                    List<Object> newList = (List<Object>)b.get(k);
+                    if (newList != null && !newList.isEmpty()) {
+                        for (Object item : newList) {
+                            if (item instanceof Map<String,Object>) {
+                                Map<String,Object> m = (Map<String,Object>)item;
+                                String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : 'Unknown';
+                                out.add('+ Added element "' + name + '"');
+                            }
+                        }
+                    }
                 }
                 continue;
             }
             
-            // Skip these metadata fields
-            if (k == 'childNames' || k == 'childTag' || k == 'childObject') {
-                continue;
-            }
+            // Skip other metadata fields
+            if (skipFields.contains(k)) continue;
             
             if (!hasA && hasB) { 
-                out.add('+ Added ' + path + ' = ' + JSON.serialize(b.get(k))); 
+                out.add('+ Added ' + path + ' = ' + safeSerialize(b.get(k))); 
                 continue; 
             }
             if (hasA && !hasB) { 
-                out.add('- Removed ' + path + ' (was ' + JSON.serialize(a.get(k)) + ')'); 
+                out.add('- Removed ' + path + ' (was ' + safeSerialize(a.get(k)) + ')'); 
                 continue; 
             }
             
@@ -67,16 +81,14 @@ public with sharing class DV_AINotesUtil {
             else if (av instanceof List<Object> && bv instanceof List<Object>)
                 out.addAll(compareList((List<Object>)av,(List<Object>)bv,path));
             else
-                out.add('~ Changed ' + path + ' from ' + JSON.serialize(av) + ' → ' + JSON.serialize(bv));
+                out.add('~ Changed ' + path + ' from ' + safeSerialize(av) + ' → ' + safeSerialize(bv));
         }
         return out;
     }
     
-    // Special handler for childPayloads - compare by Name field
     private static List<String> compareChildPayloads(List<Object> oldList, List<Object> newList, String prefix) {
         List<String> out = new List<String>();
         
-        // Build maps by Name
         Map<String, Map<String,Object>> oldByName = new Map<String, Map<String,Object>>();
         Map<String, Map<String,Object>> newByName = new Map<String, Map<String,Object>>();
         
@@ -100,30 +112,49 @@ public with sharing class DV_AINotesUtil {
             }
         }
         
-        // Find added elements
+        // Report additions with clear element names and types
         for (String name : newByName.keySet()) {
             if (!oldByName.containsKey(name)) {
-                out.add('+ Added childPayload with Name "' + name + '"');
+                Map<String,Object> element = newByName.get(name);
+                String type = element.containsKey('Type') ? String.valueOf(element.get('Type')) : 'Element';
+                out.add('+ Added ' + type + ': "' + name + '"');
             }
         }
         
-        // Find removed elements
+        // Report removals with clear element names and types
         for (String name : oldByName.keySet()) {
             if (!newByName.containsKey(name)) {
-                out.add('- Removed childPayload with Name "' + name + '"');
+                Map<String,Object> element = oldByName.get(name);
+                String type = element.containsKey('Type') ? String.valueOf(element.get('Type')) : 'Element';
+                out.add('- Removed ' + type + ': "' + name + '"');
             }
         }
         
-        // Find changed elements
+        // Report meaningful changes within elements (skip metadata noise)
+        Set<String> skipElementFields = new Set<String>{
+            'SequenceNumber', 'Level', 'ParentElementName', 'IsActive'
+        };
+        
         for (String name : newByName.keySet()) {
             if (oldByName.containsKey(name)) {
                 Map<String,Object> oldItem = oldByName.get(name);
                 Map<String,Object> newItem = newByName.get(name);
                 
-                if (String.valueOf(oldItem) != String.valueOf(newItem)) {
-                    List<String> itemDiff = compareRecursive(oldItem, newItem, 'childPayload[' + name + ']');
-                    if (!itemDiff.isEmpty()) {
-                        out.addAll(itemDiff);
+                // Check for meaningful property changes
+                for (String key : newItem.keySet()) {
+                    if (skipElementFields.contains(key)) continue;
+                    
+                    Object oldVal = oldItem.get(key);
+                    Object newVal = newItem.get(key);
+                    
+                    if (oldVal == null && newVal == null) continue;
+                    if (String.valueOf(oldVal) == String.valueOf(newVal)) continue;
+                    
+                    // Report significant changes
+                    if (key == 'PropertySetConfig') {
+                        out.add('~ Modified configuration in "' + name + '"');
+                    } else if (!skipElementFields.contains(key)) {
+                        out.add('~ Changed ' + key + ' in "' + name + '"');
                     }
                 }
             }
@@ -138,8 +169,8 @@ public with sharing class DV_AINotesUtil {
         for (Integer i = 0; i < max; i++) {
             String path = prefix + '[' + i + ']'; 
             Boolean hasA = (a != null && i < a.size()), hasB = (b != null && i < b.size());
-            if (!hasA && hasB) out.add('+ Added ' + path + ' = ' + JSON.serialize(b[i]));
-            else if (hasA && !hasB) out.add('- Removed ' + path + ' (was ' + JSON.serialize(a[i]) + ')');
+            if (!hasA && hasB) out.add('+ Added ' + path + ' = ' + safeSerialize(b[i]));
+            else if (hasA && !hasB) out.add('- Removed ' + path + ' (was ' + safeSerialize(a[i]) + ')');
             else if (hasA && hasB) {
                 Object av = a[i], bv = b[i]; 
                 if (String.valueOf(av) == String.valueOf(bv)) continue;
@@ -147,13 +178,20 @@ public with sharing class DV_AINotesUtil {
                     out.addAll(compareRecursive((Map<String,Object>)av,(Map<String,Object>)bv,path));
                 else if (av instanceof List<Object> && bv instanceof List<Object>)
                     out.addAll(compareList((List<Object>)av,(List<Object>)bv,path));
-                else out.add('~ Changed ' + path + ' from ' + JSON.serialize(av) + ' → ' + JSON.serialize(bv));
+                else out.add('~ Changed ' + path + ' from ' + safeSerialize(av) + ' → ' + safeSerialize(bv));
             }
         }
         return out;
     }
+    
+    private static String safeSerialize(Object obj) {
+        try {
+            return JSON.serialize(obj);
+        } catch (Exception e) {
+            return String.valueOf(obj);
+        }
+    }
 
-    // --- AI notes: OmniStudio - UPDATED FOR HIGHLIGHT CARDS ---
     public static String aiNotes(String componentName, String diff, String rawJson) {
         String prompt =
             'You are a senior Salesforce OmniStudio developer reviewing component changes. ' +
@@ -185,7 +223,6 @@ public with sharing class DV_AINotesUtil {
             'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff.left(12000)) +
             '\n\n=== CONTEXT (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
 
-        // HARDCODED API KEY - Replace with your actual key
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                           'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
         
@@ -214,7 +251,6 @@ public with sharing class DV_AINotesUtil {
 
         if(!String.isBlank(html)) return html;
 
-        // Fallback: Simple cards
         Integer adds=0, dels=0;
         for(String line : splitLines(diff)){ 
             if(line!=null && line.startsWith('+ ')) adds++; 
@@ -235,41 +271,6 @@ public with sharing class DV_AINotesUtil {
                '</div>';
     }
 
-    // --- AI notes for Apex (kept) ---
-    public static String aiNotesApex(String className, String diff, String body) {
-        String prompt =
-            'You are a senior Salesforce Apex reviewer. Based on the DIFF and APEX BODY, ' +
-            'produce concise release-notes style HTML for developers. ' +
-            'Use only: <p>, <ul>, <li>, <strong>, <code>. Sections: Summary, Impact, Risks, Test Ideas. ' +
-            'Keep under 180 words.\n\nClass: ' + className + '\n\n=== DIFF ===\n' + (diff==null?'':diff) +
-            '\n\n=== APEX BODY (truncated) ===\n' + (body==null?'':body.left(8000));
-        try{
-            // HARDCODED API KEY
-            String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
-                              'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
-            
-            Map<String,Object> payload = new Map<String,Object>{
-                'contents' => new List<Object>{
-                    new Map<String,Object>{
-                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
-                    }
-                }
-            };
-            HttpRequest req = new HttpRequest(); req.setMethod('POST'); req.setEndpoint(endpoint);
-            req.setHeader('Content-Type','application/json'); req.setTimeout(120000);
-            req.setBody(JSON.serialize(payload));
-            Http http = new Http(); HttpResponse res = http.send(req);
-            if(res.getStatusCode()==200) return cleanForUi(parseGeminiHtml(res.getBody()));
-        } catch(Exception e){}
-        Integer adds=0, dels=0;
-        for(String line : splitLines(diff)){ if(line!=null && line.startsWith('+ ')) adds++; else if(line!=null && line.startsWith('- ')) dels++; }
-        return '<p><strong>Summary:</strong> Updated <code>' + enc(className) + '</code> with ' + adds + ' additions and ' + dels + ' removals.</p>' +
-               '<ul><li><strong>Impact:</strong> Potential logic or API behavior changes.</li>' +
-               '<li><strong>Risks:</strong> Null checks, bulkification, security.</li>' +
-               '<li><strong>Test Ideas:</strong> Re-run unit tests for changed methods.</li></ul>';
-    }
-
-    // --- Gemini parsing & sanitizing ---
     private static String parseGeminiHtml(String jsonResponse){
         if(String.isBlank(jsonResponse)) return null;
         try{
@@ -286,6 +287,7 @@ public with sharing class DV_AINotesUtil {
             return (text==null)? null : String.valueOf(text);
         } catch(Exception e){ return null; }
     }
+    
     public static String cleanForUi(String html){
         if(String.isBlank(html)) return '';
         String out = html.replace('```html','').replace('```','');
@@ -293,9 +295,5 @@ public with sharing class DV_AINotesUtil {
         out = out.replaceAll('(?is)<style[\\s\\S]*?</style>','');
         out = out.replaceAll('`{1,3}','');
         return out;
-    }
-    private static String enc(String s){
-        if(s==null) return '';
-        return s.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;').replace('\'','&#39;');
     }
 }

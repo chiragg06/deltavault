@@ -13,12 +13,12 @@ public with sharing class DV_VaultApi {
     
     public class CompRow {
         @AuraEnabled public Id id;
-        @AuraEnabled public String fullName;  // CHANGED: Return full name instead of baseName
+        @AuraEnabled public String fullName;
         @AuraEnabled public String type;
         @AuraEnabled public String subType;
         @AuraEnabled public Boolean active;
         @AuraEnabled public Datetime lastSeen;
-        @AuraEnabled public Decimal version;  // ADDED: Version number
+        @AuraEnabled public Decimal version;
         @AuraEnabled public Datetime latestAt;
         @AuraEnabled public String latestChangeType;
         @AuraEnabled public String latestActor;
@@ -34,6 +34,7 @@ public with sharing class DV_VaultApi {
         @AuraEnabled public String aiNotesHtml;
         @AuraEnabled public String diffText;
         @AuraEnabled public String rawJson;
+        @AuraEnabled public String elementChangesSummary; // NEW FIELD
     }
     
     public class ContributorOption {
@@ -79,7 +80,6 @@ public with sharing class DV_VaultApi {
         return result;
     }
     
-    // SIMPLIFIED: Just return all components with their full names
     @AuraEnabled(cacheable=true)
     public static CompPage getComponentsPage(
         String family, 
@@ -129,7 +129,6 @@ public with sharing class DV_VaultApi {
             compIds.add(c.Id);
         }
 
-        // Get latest snapshot for each component
         Map<Id, OmniSnapshot__c> latestSnapByComp = new Map<Id, OmniSnapshot__c>();
         if (!compIds.isEmpty()) {
             for (OmniSnapshot__c s : [
@@ -147,7 +146,7 @@ public with sharing class DV_VaultApi {
         for (OmniComponent__c c : comps) {
             CompRow row = new CompRow();
             row.id = c.Id;
-            row.fullName = c.FullName__c;  // Return full name
+            row.fullName = c.FullName__c;
             row.type = c.OmniType__c;
             row.subType = c.SubType__c;
             row.active = c.IsActive__c;
@@ -177,7 +176,6 @@ public with sharing class DV_VaultApi {
         return page;
     }
     
-    // Get snapshots for specific component ID
     @AuraEnabled(cacheable=true)
     public static SnapPage getSnapshotsForComponent(
         Id componentId,
@@ -214,9 +212,10 @@ public with sharing class DV_VaultApi {
             whereClause += ' AND (ModifiedAt__c < :cTs OR (ModifiedAt__c = :cTs AND Id < :cId)) ';
         }
         
+        // UPDATED: Include ElementChangesSummary__c field
         List<OmniSnapshot__c> snaps = Database.query(
             'SELECT Id, ModifiedAt__c, ChangeType__c, Version__c, Source__c, ActorName__c, ' +
-            'AI_Notes_Markdown__c, DiffToPrev__c, RawJSON__c ' +
+            'AI_Notes_Markdown__c, DiffToPrev__c, RawJSON__c, ElementChangesSummary__c ' +
             'FROM OmniSnapshot__c ' + whereClause +
             'ORDER BY ModifiedAt__c DESC, Id DESC LIMIT :pageSize'
         );
@@ -232,6 +231,7 @@ public with sharing class DV_VaultApi {
             r.aiNotesHtml = s.AI_Notes_Markdown__c;
             r.diffText = s.DiffToPrev__c;
             r.rawJson = s.RawJSON__c;
+            r.elementChangesSummary = s.ElementChangesSummary__c; // NEW
             
             page.items.add(r);
         }

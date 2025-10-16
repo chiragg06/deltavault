@@ -49,23 +49,19 @@ public with sharing class DV_Util {
         return full != null ? full : '';
     }
 
-    // ---- CRITICAL: Clean string for JSON - removes ALL control characters ----
+    // ---- CRITICAL FIX: Proper JSON cleaning without breaking nested JSON ----
     public static String cleanStringForJson(String input) {
         if (String.isBlank(input)) return input;
         
-        // Replace ALL control characters (ASCII 0-31) with spaces
-        // This includes newlines, tabs, carriage returns, etc.
+        // Replace control characters but preserve JSON structure
         String cleaned = input;
         
+        // Remove ONLY problematic control characters (0-31 except newline/tab)
         for (Integer i = 0; i <= 31; i++) {
+            if (i == 9 || i == 10 || i == 13) continue; // Keep tab, LF, CR for JSON formatting
             String controlChar = String.fromCharArray(new List<Integer>{i});
-            cleaned = cleaned.replace(controlChar, ' ');
+            cleaned = cleaned.replace(controlChar, '');
         }
-        
-        // Also explicitly handle common ones
-        cleaned = cleaned.replace('\n', ' ');
-        cleaned = cleaned.replace('\r', ' ');
-        cleaned = cleaned.replace('\t', ' ');
         
         return cleaned;
     }
@@ -76,7 +72,7 @@ public with sharing class DV_Util {
         Map<String, Schema.SObjectField> f = rec.getSObjectType().getDescribe().fields.getMap();
         Map<String,Object> m = new Map<String,Object>();
 
-        // CRITICAL: Put simple fields with cleaning
+        // Simple fields
         putClean(rec, f, m, 'Name');
         putClean(rec, f, m, 'UniqueName');
         putClean(rec, f, m, 'DeveloperName');
@@ -88,23 +84,23 @@ public with sharing class DV_Util {
         putClean(rec, f, m, 'Type');
         putClean(rec, f, m, 'SubType');
         
-        // Boolean fields - no cleaning needed
+        // Boolean fields
         if (f.containsKey('IsActive') && rec.get('IsActive') != null) m.put('IsActive', rec.get('IsActive'));
         if (f.containsKey('Active') && rec.get('Active') != null) m.put('Active', rec.get('Active'));
         
-        // Numeric fields - no cleaning needed
+        // Numeric fields
         if (f.containsKey('VersionNumber') && rec.get('VersionNumber') != null) m.put('VersionNumber', rec.get('VersionNumber'));
         if (f.containsKey('OmniScriptVersionNumber') && rec.get('OmniScriptVersionNumber') != null) m.put('OmniScriptVersionNumber', rec.get('OmniScriptVersionNumber'));
         if (f.containsKey('OmniProcessVersionNumber') && rec.get('OmniProcessVersionNumber') != null) m.put('OmniProcessVersionNumber', rec.get('OmniProcessVersionNumber'));
         
         putClean(rec, f, m, 'Language');
 
-        // Complex fields that need special handling
+        // Complex JSON fields - CRITICAL FIX: Handle as JSON objects, not strings
         if (api == 'OmniUiCard') {
-            putComplexClean(rec, f, m, 'PropertySetConfig', PROPERTY_CONFIG_MAX);
-            putComplexClean(rec, f, m, 'DataSourceConfig', DATA_SOURCE_MAX);
-            putComplexClean(rec, f, m, 'StylingConfiguration', STYLING_MAX);
-            putComplexClean(rec, f, m, 'SampleDataSourceResponse', SAMPLE_DATA_MAX);
+            putJsonField(rec, f, m, 'PropertySetConfig', PROPERTY_CONFIG_MAX);
+            putJsonField(rec, f, m, 'DataSourceConfig', DATA_SOURCE_MAX);
+            putJsonField(rec, f, m, 'StylingConfiguration', STYLING_MAX);
+            putJsonField(rec, f, m, 'SampleDataSourceResponse', SAMPLE_DATA_MAX);
         } else if (api == 'OmniProcess') {
             putComplexClean(rec, f, m, 'IntegrationProcedureInput', 60000);
             putComplexClean(rec, f, m, 'IntegrationProcedureOutput', 60000);
@@ -115,12 +111,12 @@ public with sharing class DV_Util {
             putClean(rec, f, m, 'Type');
             if (f.containsKey('SequenceNumber') && rec.get('SequenceNumber') != null) m.put('SequenceNumber', rec.get('SequenceNumber'));
             if (f.containsKey('Level') && rec.get('Level') != null) m.put('Level', rec.get('Level'));
-            putComplexClean(rec, f, m, 'PropertySetConfig', 60000);
+            putJsonField(rec, f, m, 'PropertySetConfig', 60000);
         } else if (api == 'OmniDataTransform') {
             putClean(rec, f, m, 'Type');
             putClean(rec, f, m, 'GlobalKey');
-            putComplexClean(rec, f, m, 'ExpectedInputJson', 90000);
-            putComplexClean(rec, f, m, 'ExpectedOutputJson', 90000);
+            putJsonField(rec, f, m, 'ExpectedInputJson', 90000);
+            putJsonField(rec, f, m, 'ExpectedOutputJson', 90000);
         } else if (api == 'OmniDataTransformItem') {
             putClean(rec, f, m, 'FormulaExpression');
             putClean(rec, f, m, 'FormulaResultPath');
@@ -177,20 +173,38 @@ public with sharing class DV_Util {
         }
     }
     
-    // Complex field - clean, truncate if needed, put as-is (don't try to parse as JSON)
+    // CRITICAL FIX: Handle JSON fields properly - parse and store as objects
+    private static void putJsonField(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field, Integer maxLen) {
+        if (!f.containsKey(field) || rec.get(field) == null) return;
+        
+        String val = String.valueOf(rec.get(field));
+        
+        // Clean control characters
+        val = cleanStringForJson(val);
+        
+        // Try to parse as JSON - if valid, store as object; if not, store as string
+        try {
+            Object parsed = JSON.deserializeUntyped(val);
+            out.put(field, parsed);
+        } catch (Exception e) {
+            // Not valid JSON - store as cleaned string
+            if (maxLen != null && val.length() > maxLen) {
+                val = val.substring(0, maxLen) + '\n... [TRUNCATED]';
+            }
+            out.put(field, val);
+        }
+    }
+    
+    // Complex field - for non-JSON text fields
     private static void putComplexClean(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field, Integer maxLen) {
         if (f.containsKey(field) && rec.get(field) != null) {
             String val = String.valueOf(rec.get(field));
-            
-            // Clean ALL control characters
             val = cleanStringForJson(val);
             
-            // Truncate if too long
             if (maxLen != null && val.length() > maxLen) {
-                val = val.substring(0, maxLen) + '\n... [TRUNCATED - ' + val.length() + ' chars total]';
+                val = val.substring(0, maxLen) + '\n... [TRUNCATED]';
             }
             
-            // Put as-is - don't try to parse/format
             out.put(field, val);
         }
     }

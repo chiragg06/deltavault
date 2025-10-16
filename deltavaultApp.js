@@ -348,6 +348,7 @@ export default class DeltavaultApp extends LightningElement {
             setTimeout(() => {
                 this.renderAiNotes();
                 this.renderColorCodedDiff();
+                this.renderElementChangesTable();
             }, 100);
         } catch(e) {
             console.error('loadHistory error:', e);
@@ -367,6 +368,84 @@ export default class DeltavaultApp extends LightningElement {
         });
     }
     
+    // CRITICAL: New method to render element changes table
+    renderElementChangesTable() {
+        this.historyItems.forEach(snap => {
+            const tableEl = this.template.querySelector(`[data-element-table-id="${snap.id}"]`);
+            if (tableEl && snap.elementChangesSummary && !tableEl.dataset.rendered) {
+                tableEl.innerHTML = this.buildElementChangesTable(snap.elementChangesSummary);
+                tableEl.dataset.rendered = 'true';
+            }
+        });
+    }
+    
+    // CRITICAL: Parse ElementChangesSummary and build HTML table
+    buildElementChangesTable(elementSummary) {
+        if (!elementSummary) return '<p class="muted">No element changes detected.</p>';
+        
+        const lines = elementSummary.split('\n');
+        let html = '<div class="element-changes-table">';
+        
+        let currentSection = '';
+        let hasChanges = false;
+        
+        for (let line of lines) {
+            if (line.includes('=== ADDED')) {
+                if (currentSection) html += '</tbody></table>';
+                currentSection = 'ADDED';
+                html += '<h4 class="element-section-title added">✚ Added Elements</h4>';
+                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Parent</th></tr></thead><tbody>';
+                hasChanges = true;
+            } else if (line.includes('=== REMOVED')) {
+                if (currentSection) html += '</tbody></table>';
+                currentSection = 'REMOVED';
+                html += '<h4 class="element-section-title removed">✖ Removed Elements</h4>';
+                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Parent</th></tr></thead><tbody>';
+                hasChanges = true;
+            } else if (line.includes('=== MODIFIED')) {
+                if (currentSection) html += '</tbody></table>';
+                currentSection = 'MODIFIED';
+                html += '<h4 class="element-section-title modified">⟳ Modified Elements</h4>';
+                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Changes</th></tr></thead><tbody>';
+                hasChanges = true;
+            } else if (line.startsWith('+ ') || line.startsWith('- ') || line.startsWith('~ ')) {
+                const content = line.substring(2).trim();
+                const rowClass = currentSection.toLowerCase();
+                
+                if (currentSection === 'ADDED' || currentSection === 'REMOVED') {
+                    const match = content.match(/^(.+?)\s*\((.+?)\)\s*(?:under|from)?\s*(.*)$/);
+                    if (match) {
+                        const elementName = this.escapeHtml(match[1]);
+                        const elementType = this.escapeHtml(match[2]);
+                        const parent = match[3] ? this.escapeHtml(match[3]) : '-';
+                        html += `<tr class="element-row ${rowClass}">
+                            <td class="element-name">${elementName}</td>
+                            <td class="element-type">${elementType}</td>
+                            <td class="element-parent">${parent}</td>
+                        </tr>`;
+                    }
+                } else if (currentSection === 'MODIFIED') {
+                    const match = content.match(/^(.+?)\s*\((.+?)\)\s*-?\s*(.*)$/);
+                    if (match) {
+                        const elementName = this.escapeHtml(match[1]);
+                        const elementType = this.escapeHtml(match[2]);
+                        const changes = match[3] ? this.escapeHtml(match[3]) : 'Configuration updated';
+                        html += `<tr class="element-row ${rowClass}">
+                            <td class="element-name">${elementName}</td>
+                            <td class="element-type">${elementType}</td>
+                            <td class="element-changes">${changes}</td>
+                        </tr>`;
+                    }
+                }
+            }
+        }
+        
+        if (currentSection) html += '</tbody></table>';
+        html += '</div>';
+        
+        return hasChanges ? html : '<p class="muted">No element changes detected.</p>';
+    }
+    
     renderColorCodedDiff() {
         this.historyItems.forEach(snap => {
             const diffEl = this.template.querySelector(`.diff-viewer[data-diff-id="${snap.id}"]`);
@@ -382,6 +461,7 @@ export default class DeltavaultApp extends LightningElement {
             }
         });
     }
+    // Continuation from Part 1...
     
     generateReadableSummary(diffText) {
         if (!diffText) return '<p class="diff-summary-text">No changes detected.</p>';

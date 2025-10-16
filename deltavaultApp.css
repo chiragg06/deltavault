@@ -87,6 +87,15 @@
     width: 100%;
     justify-content: space-between;
   }
+  
+  .element-changes-table {
+    font-size: 0.85rem;
+  }
+  
+  .element-changes-table th,
+  .element-changes-table td {
+    padding: 0.625rem 0.75rem;
+  }
 }
 
 /* ==================== */
@@ -804,6 +813,161 @@
 }
 
 /* ==================== */
+/* ELEMENT CHANGES TABLE */
+/* ==================== */
+.element-changes-section {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.element-changes-section .diff-summary-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--fg);
+  margin: 0 0 1.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.element-changes-container {
+  overflow-x: auto;
+}
+
+.element-changes-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.element-changes-table thead {
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.08) 0%, transparent 100%);
+}
+
+.element-changes-table th {
+  padding: 0.875rem 1rem;
+  text-align: left;
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border);
+}
+
+.element-changes-table tbody tr {
+  transition: all 0.2s ease;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.element-changes-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.element-changes-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.element-changes-table td {
+  padding: 0.875rem 1rem;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
+.action-cell {
+  display: flex;
+  align-items: center;
+}
+
+.action-badge {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-badge.added {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--green);
+}
+
+.action-badge.removed {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
+.action-badge.modified {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+}
+
+.action-icon {
+  font-size: 0.9rem;
+}
+
+.element-name-cell {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.element-type-cell {
+  color: var(--muted);
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+.parent-element-cell {
+  color: var(--fg);
+  font-style: italic;
+}
+
+.no-element-changes {
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted);
+}
+
+.no-element-changes-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+  opacity: 0.5;
+}
+
+.expand-icon {
+  color: var(--muted);
+  font-size: 1rem;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.expand-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.expandable-row {
+  cursor: pointer;
+}
+
+.expandable-row:hover .expand-icon {
+  color: var(--accent);
+}
+
+/* ==================== */
 /* SUMMARY TAB - BEAUTIFUL HIGHLIGHT CARDS */
 /* ==================== */
 .highlight-cards {
@@ -868,7 +1032,6 @@
   border-color: var(--green);
 }
 
-/* Card Title - Make it BOLD and PROMINENT */
 .highlight-card .card-title {
   font-size: 1.35rem;
   font-weight: 900;
@@ -900,7 +1063,6 @@
   background: linear-gradient(90deg, var(--green) 0%, transparent 100%);
 }
 
-/* Card Content - Better spacing and readability */
 .highlight-card ul {
   list-style: none;
   padding: 0;
@@ -937,7 +1099,6 @@
   padding-right: 0.5rem;
 }
 
-/* Bullet Points - Bigger and more visible */
 .highlight-card li::before {
   content: '▸';
   position: absolute;
@@ -969,30 +1130,12 @@
   top: 0;
 }
 
-/* Empty state */
 .highlight-card li.empty {
   color: var(--muted);
   font-style: italic;
   font-weight: 400;
 }
 
-/* Add some breathing room between cards on smaller screens */
-@media (max-width: 768px) {
-  .highlight-cards {
-    grid-template-columns: 1fr;
-    gap: 2rem;
-  }
-  
-  .highlight-card {
-    padding: 1.75rem;
-  }
-  
-  .highlight-card .card-title {
-    font-size: 1.25rem;
-  }
-}
-
-/* Special emphasis for the emoji in title */
 .highlight-card .card-title > span:first-child {
   font-size: 1.75rem;
   filter: drop-shadow(0 2px 8px rgba(255, 255, 255, 0.3));
@@ -1352,4 +1495,150 @@
 .tl-change {
   color: var(--muted);
   font-size: 0.875rem;
+}
+/* =================================================================== */
+/* ELEMENT CHANGES TABLE - Add this to deltavaultApp.css              */
+/* =================================================================== */
+
+/* =================================================================== */
+/* ELEMENT CHANGES TABLE - Add this to deltavaultApp.css              */
+/* =================================================================== */
+
+.element-changes-table {
+  margin-top: 1.5rem;
+}
+
+.element-section-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.element-section-title.added {
+  background: var(--green-dim);
+  color: var(--green);
+  border-left: 4px solid var(--green);
+}
+
+.element-section-title.removed {
+  background: var(--red-dim);
+  color: var(--red);
+  border-left: 4px solid var(--red);
+}
+
+.element-section-title.modified {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border-left: 4px solid var(--yellow);
+}
+
+.element-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.5rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.element-table thead {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.element-table th {
+  text-align: left;
+  padding: 0.875rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border);
+}
+
+.element-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: all 0.2s;
+}
+
+.element-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.element-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.element-table td {
+  padding: 0.875rem 1rem;
+  font-size: 0.9375rem;
+  color: var(--fg);
+}
+
+.element-row.added {
+  border-left: 4px solid var(--green);
+  background: rgba(16, 185, 129, 0.03);
+}
+
+.element-row.removed {
+  border-left: 4px solid var(--red);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.element-row.modified {
+  border-left: 4px solid var(--yellow);
+  background: rgba(245, 158, 11, 0.03);
+}
+
+.element-name {
+  font-weight: 700;
+  color: var(--fg);
+  font-size: 1rem;
+}
+
+.element-type {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.875rem;
+}
+
+.element-parent {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.element-changes {
+  color: var(--yellow);
+  font-size: 0.875rem;
+  font-family: 'Courier New', monospace;
+}
+
+/* Empty state for element changes */
+.element-changes-table .muted {
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .element-table {
+    font-size: 0.875rem;
+  }
+  
+  .element-table th,
+  .element-table td {
+    padding: 0.625rem 0.75rem;
+  }
+  
+  .element-section-title {
+    font-size: 1rem;
+  }
 }

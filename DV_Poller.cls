@@ -58,7 +58,7 @@ public with sharing class DV_Poller implements Schedulable {
             comps.put(full, oc);
         }
         
-        upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', null, null);
+        upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', null, null, null);
     }
     
     // CRITICAL FIX: Compare previous state to only capture CHANGED elements
@@ -331,18 +331,7 @@ public with sharing class DV_Poller implements Schedulable {
         return txt.substring(0, max) + '\n\n... [TRUNCATED - ' + txt.length() + ' chars total]';
     }
     
-    // UPDATED: Now accepts element change summary
-    private static void upsertAndSnapshot(
-        Map<String, OmniComponent__c> comps,
-        Map<String, Map<String,Object>> afterJsonByFull,
-        Datetime nowTs,
-        String actor,
-        String childTag,
-        Map<String,String> childNameBy
-    ) {
-        upsertAndSnapshot(comps, afterJsonByFull, nowTs, actor, childTag, childNameBy, null);
-    }
-    
+    // Single unified method with optional parameters
     private static void upsertAndSnapshot(
         Map<String, OmniComponent__c> comps,
         Map<String, Map<String,Object>> afterJsonByFull,
@@ -352,6 +341,7 @@ public with sharing class DV_Poller implements Schedulable {
         Map<String,String> childNameBy,
         Map<String, ElementChangeSummary> changesByFull
     ) {
+        // changesByFull can be null for non-child processes
         if (comps.isEmpty()) return;
         
         Map<String,Id> nameToId = new Map<String,Id>();
@@ -447,7 +437,7 @@ public with sharing class DV_Poller implements Schedulable {
             // NEW: Store element changes in new field
             if (changesByFull != null && changesByFull.containsKey(fn)) {
                 ElementChangeSummary changeSummary = changesByFull.get(fn);
-                snap.put('ElementChangesSummary__c', buildSourceText(null, null, changeSummary));
+                snap.put('ElementChangesSummary__c', buildSourceText(childTag, childNameBy != null ? childNameBy.get(fn) : null, changeSummary));
             }
             
             // Keep original Source__c as picklist value
@@ -566,7 +556,7 @@ public with sharing class DV_Poller implements Schedulable {
             throw new AuraHandledException('No versions found for ' + baseName + ' in ' + family + '.');
         }
         
-        upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null);
+        upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
     }
     
     @AuraEnabled
@@ -615,10 +605,11 @@ public with sharing class DV_Poller implements Schedulable {
         }
         
         if (!afterBy.isEmpty()) {
-            upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null);
+            upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
         }
     }
-      public class ElementChangeSummary {
+    
+    public class ElementChangeSummary {
         public List<ElementChange> added;
         public List<ElementChange> removed;
         public List<ElementChange> modified;

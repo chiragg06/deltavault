@@ -26,7 +26,6 @@ public with sharing class DV_AINotesUtil {
         if (a != null) keys.addAll(a.keySet()); 
         if (b != null) keys.addAll(b.keySet());
         
-        // CRITICAL: Skip metadata fields that add noise to diffs
         Set<String> skipFields = new Set<String>{
             'childNames', 'childTag', 'childObject',
             'Language', 'VersionNumber', 'OmniScriptVersionNumber', 'OmniProcessVersionNumber',
@@ -34,18 +33,15 @@ public with sharing class DV_AINotesUtil {
         };
         
         for (String k : keys) {
-            // Skip metadata fields at root level
             if (prefix == '' && skipFields.contains(k)) continue;
             
             String path = prefix == '' ? k : prefix + '.' + k;
             Boolean hasA = (a != null && a.containsKey(k)), hasB = (b != null && b.containsKey(k));
             
-            // Special handling for childPayloads - this is where elements are added/removed
             if (k == 'childPayloads') {
                 if (hasA && hasB) {
                     out.addAll(compareChildPayloads((List<Object>)a.get(k), (List<Object>)b.get(k), path));
                 } else if (!hasA && hasB) {
-                    // New childPayloads added
                     List<Object> newList = (List<Object>)b.get(k);
                     if (newList != null && !newList.isEmpty()) {
                         for (Object item : newList) {
@@ -60,7 +56,6 @@ public with sharing class DV_AINotesUtil {
                 continue;
             }
             
-            // Skip other metadata fields
             if (skipFields.contains(k)) continue;
             
             if (!hasA && hasB) { 
@@ -112,7 +107,6 @@ public with sharing class DV_AINotesUtil {
             }
         }
         
-        // Report additions with clear element names and types
         for (String name : newByName.keySet()) {
             if (!oldByName.containsKey(name)) {
                 Map<String,Object> element = newByName.get(name);
@@ -121,7 +115,6 @@ public with sharing class DV_AINotesUtil {
             }
         }
         
-        // Report removals with clear element names and types
         for (String name : oldByName.keySet()) {
             if (!newByName.containsKey(name)) {
                 Map<String,Object> element = oldByName.get(name);
@@ -130,7 +123,6 @@ public with sharing class DV_AINotesUtil {
             }
         }
         
-        // Report meaningful changes within elements (skip metadata noise)
         Set<String> skipElementFields = new Set<String>{
             'SequenceNumber', 'Level', 'ParentElementName', 'IsActive'
         };
@@ -140,7 +132,6 @@ public with sharing class DV_AINotesUtil {
                 Map<String,Object> oldItem = oldByName.get(name);
                 Map<String,Object> newItem = newByName.get(name);
                 
-                // Check for meaningful property changes
                 for (String key : newItem.keySet()) {
                     if (skipElementFields.contains(key)) continue;
                     
@@ -150,7 +141,6 @@ public with sharing class DV_AINotesUtil {
                     if (oldVal == null && newVal == null) continue;
                     if (String.valueOf(oldVal) == String.valueOf(newVal)) continue;
                     
-                    // Report significant changes
                     if (key == 'PropertySetConfig') {
                         out.add('~ Modified configuration in "' + name + '"');
                     } else if (!skipElementFields.contains(key)) {
@@ -192,36 +182,45 @@ public with sharing class DV_AINotesUtil {
         }
     }
 
-    public static String aiNotes(String componentName, String diff, String rawJson) {
+    // CRITICAL FIX: Updated to use ElementChangesSummary__c field
+    public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
+        // Build context from element changes summary if available
+        String elementContext = '';
+        if (!String.isBlank(elementChangesSummary)) {
+            elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
+        }
+        
         String prompt =
             'You are a senior Salesforce OmniStudio developer reviewing component changes. ' +
-            'Analyze the DIFF and provide ULTRA-CONCISE bullet points for busy developers.\n\n' +
+            'Analyze the ELEMENT CHANGES and provide ULTRA-CONCISE bullet points for busy developers.\n\n' +
             'CRITICAL FORMAT REQUIREMENTS:\n' +
             '1. Return ONLY HTML using these tags: <div>, <ul>, <li>, <strong>, <span>\n' +
             '2. Create 3 highlight cards with this EXACT structure:\n' +
             '<div class="highlight-card">\n' +
             '  <div class="card-title">🎯 Key Changes</div>\n' +
             '  <ul>\n' +
-            '    <li>Concise change 1 (max 10 words)</li>\n' +
-            '    <li>Concise change 2</li>\n' +
+            '    <li>Specific element added/removed/modified (max 10 words)</li>\n' +
+            '    <li>Another specific change</li>\n' +
             '  </ul>\n' +
             '</div>\n' +
             '<div class="highlight-card warning">\n' +
             '  <div class="card-title">⚠️ Risks</div>\n' +
-            '  <ul><li>Risk 1 (max 10 words)</li></ul>\n' +
+            '  <ul><li>Specific risk related to element changes (max 10 words)</li></ul>\n' +
             '</div>\n' +
             '<div class="highlight-card success">\n' +
             '  <div class="card-title">✅ Test This</div>\n' +
-            '  <ul><li>Test scenario 1 (max 10 words)</li></ul>\n' +
+            '  <ul><li>Specific test scenario for changed elements (max 10 words)</li></ul>\n' +
             '</div>\n\n' +
             'RULES:\n' +
             '• Each bullet: MAX 10 words\n' +
-            '• Focus on WHAT changed (element names, steps)\n' +
-            '• Mention user impact ONLY if critical\n' +
-            '• NO explanatory text outside cards\n' +
-            '• Be specific: "Removed Time1 from Step2" NOT "removed a field"\n\n' +
-            'Component: ' + componentName + '\n\n=== DIFF ===\n' + (diff==null?'':diff.left(12000)) +
-            '\n\n=== CONTEXT (truncated) ===\n' + (rawJson==null?'':rawJson.left(8000));
+            '• Focus on ELEMENT names from ELEMENT CHANGES section\n' +
+            '• Be specific: "Added Email element to Step2" NOT "added a field"\n' +
+            '• For REMOVED elements, mention what was deleted\n' +
+            '• For MODIFIED elements, mention what configuration changed\n' +
+            '• NO generic statements - use actual element names\n' +
+            '• NO explanatory text outside cards\n\n' +
+            'Component: ' + componentName + elementContext +
+            '\n\n=== TECHNICAL DIFF (Reference Only) ===\n' + (diff==null?'':diff.left(8000));
 
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                           'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
@@ -251,6 +250,12 @@ public with sharing class DV_AINotesUtil {
 
         if(!String.isBlank(html)) return html;
 
+        // FALLBACK: Parse element changes summary directly
+        if (!String.isBlank(elementChangesSummary)) {
+            return buildFallbackHtmlFromElementSummary(elementChangesSummary);
+        }
+
+        // Final fallback
         Integer adds=0, dels=0;
         for(String line : splitLines(diff)){ 
             if(line!=null && line.startsWith('+ ')) adds++; 
@@ -269,6 +274,87 @@ public with sharing class DV_AINotesUtil {
                '<div class="card-title">✅ Test This</div>' +
                '<ul><li>Test affected steps and integrations</li></ul>' +
                '</div>';
+    }
+
+    // CRITICAL: Parse ElementChangesSummary to build fallback HTML
+    private static String buildFallbackHtmlFromElementSummary(String elementSummary) {
+        List<String> lines = splitLines(elementSummary);
+        List<String> added = new List<String>();
+        List<String> removed = new List<String>();
+        List<String> modified = new List<String>();
+        
+        String currentSection = '';
+        for (String line : lines) {
+            if (line.contains('=== ADDED')) {
+                currentSection = 'ADDED';
+            } else if (line.contains('=== REMOVED')) {
+                currentSection = 'REMOVED';
+            } else if (line.contains('=== MODIFIED')) {
+                currentSection = 'MODIFIED';
+            } else if (line.startsWith('+ ')) {
+                added.add(line.substring(2).trim());
+            } else if (line.startsWith('- ')) {
+                removed.add(line.substring(2).trim());
+            } else if (line.startsWith('~ ')) {
+                modified.add(line.substring(2).trim());
+            }
+        }
+        
+        String keyChangesHtml = '<div class="highlight-card"><div class="card-title">🎯 Key Changes</div><ul>';
+        if (!added.isEmpty()) {
+            for (String item : added) {
+                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                keyChangesHtml += '<li>Added: ' + escapeHtml(item) + '</li>';
+            }
+        }
+        if (!removed.isEmpty()) {
+            for (String item : removed) {
+                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                keyChangesHtml += '<li>Removed: ' + escapeHtml(item) + '</li>';
+            }
+        }
+        if (!modified.isEmpty()) {
+            for (String item : modified) {
+                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                keyChangesHtml += '<li>Modified: ' + escapeHtml(item) + '</li>';
+            }
+        }
+        keyChangesHtml += '</ul></div>';
+        
+        String risksHtml = '<div class="highlight-card warning"><div class="card-title">⚠️ Risks</div><ul>';
+        if (!removed.isEmpty()) {
+            risksHtml += '<li>Removed elements may break integrations</li>';
+        }
+        if (!modified.isEmpty()) {
+            risksHtml += '<li>Configuration changes need testing</li>';
+        }
+        if (removed.isEmpty() && modified.isEmpty()) {
+            risksHtml += '<li>Test new element functionality</li>';
+        }
+        risksHtml += '</ul></div>';
+        
+        String testHtml = '<div class="highlight-card success"><div class="card-title">✅ Test This</div><ul>';
+        if (!added.isEmpty()) {
+            testHtml += '<li>Verify new elements function correctly</li>';
+        }
+        if (!removed.isEmpty()) {
+            testHtml += '<li>Check dependent flows still work</li>';
+        }
+        if (!modified.isEmpty()) {
+            testHtml += '<li>Test modified element configurations</li>';
+        }
+        testHtml += '</ul></div>';
+        
+        return keyChangesHtml + risksHtml + testHtml;
+    }
+    
+    private static String escapeHtml(String text) {
+        if (String.isBlank(text)) return '';
+        return text.replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;')
+                   .replace('"', '&quot;')
+                   .replace('\'', '&#39;');
     }
 
     private static String parseGeminiHtml(String jsonResponse){

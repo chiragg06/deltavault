@@ -1,191 +1,9 @@
 public with sharing class DV_AINotesUtil {
 
-    private static List<String> splitLines(String s){
-        if(s==null) return new List<String>();
-        String norm = s.replace('\r\n','\n');
-        return new List<String>(norm.split('\n', -1));
-    }
-
-    public static String deepDiff(String oldJson, String newJson) {
-        if (String.isBlank(newJson)) return '';
-        
-        Map<String,Object> a, b;
-        try {
-            a = (Map<String,Object>) JSON.deserializeUntyped(String.isBlank(oldJson) ? '{}' : oldJson);
-            b = (Map<String,Object>) JSON.deserializeUntyped(newJson);
-        } catch (Exception e) {
-            return 'Unable to parse JSON for comparison';
-        }
-        
-        return String.join(compareRecursive(a, b, ''), '\n');
-    }
-    
-    private static List<String> compareRecursive(Map<String,Object> a, Map<String,Object> b, String prefix) {
-        List<String> out = new List<String>(); 
-        Set<String> keys = new Set<String>();
-        if (a != null) keys.addAll(a.keySet()); 
-        if (b != null) keys.addAll(b.keySet());
-        
-        Set<String> skipFields = new Set<String>{
-            'childNames', 'childTag', 'childObject',
-            'Language', 'VersionNumber', 'OmniScriptVersionNumber', 'OmniProcessVersionNumber',
-            'SubType', 'Type', 'IsActive', 'Active', 'SequenceNumber', 'Level'
-        };
-        
-        for (String k : keys) {
-            if (prefix == '' && skipFields.contains(k)) continue;
-            
-            String path = prefix == '' ? k : prefix + '.' + k;
-            Boolean hasA = (a != null && a.containsKey(k)), hasB = (b != null && b.containsKey(k));
-            
-            if (k == 'childPayloads') {
-                if (hasA && hasB) {
-                    out.addAll(compareChildPayloads((List<Object>)a.get(k), (List<Object>)b.get(k), path));
-                } else if (!hasA && hasB) {
-                    List<Object> newList = (List<Object>)b.get(k);
-                    if (newList != null && !newList.isEmpty()) {
-                        for (Object item : newList) {
-                            if (item instanceof Map<String,Object>) {
-                                Map<String,Object> m = (Map<String,Object>)item;
-                                String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : 'Unknown';
-                                out.add('+ Added element "' + name + '"');
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            
-            if (skipFields.contains(k)) continue;
-            
-            if (!hasA && hasB) { 
-                out.add('+ Added ' + path + ' = ' + safeSerialize(b.get(k))); 
-                continue; 
-            }
-            if (hasA && !hasB) { 
-                out.add('- Removed ' + path + ' (was ' + safeSerialize(a.get(k)) + ')'); 
-                continue; 
-            }
-            
-            Object av = a.get(k), bv = b.get(k);
-            if (av == null && bv == null) continue;
-            if (String.valueOf(av) == String.valueOf(bv)) continue;
-            
-            if (av instanceof Map<String,Object> && bv instanceof Map<String,Object>)
-                out.addAll(compareRecursive((Map<String,Object>)av,(Map<String,Object>)bv,path));
-            else if (av instanceof List<Object> && bv instanceof List<Object>)
-                out.addAll(compareList((List<Object>)av,(List<Object>)bv,path));
-            else
-                out.add('~ Changed ' + path + ' from ' + safeSerialize(av) + ' → ' + safeSerialize(bv));
-        }
-        return out;
-    }
-    
-    private static List<String> compareChildPayloads(List<Object> oldList, List<Object> newList, String prefix) {
-        List<String> out = new List<String>();
-        
-        Map<String, Map<String,Object>> oldByName = new Map<String, Map<String,Object>>();
-        Map<String, Map<String,Object>> newByName = new Map<String, Map<String,Object>>();
-        
-        if (oldList != null) {
-            for (Object item : oldList) {
-                if (item instanceof Map<String,Object>) {
-                    Map<String,Object> m = (Map<String,Object>)item;
-                    String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : null;
-                    if (name != null) oldByName.put(name, m);
-                }
-            }
-        }
-        
-        if (newList != null) {
-            for (Object item : newList) {
-                if (item instanceof Map<String,Object>) {
-                    Map<String,Object> m = (Map<String,Object>)item;
-                    String name = m.containsKey('Name') ? String.valueOf(m.get('Name')) : null;
-                    if (name != null) newByName.put(name, m);
-                }
-            }
-        }
-        
-        for (String name : newByName.keySet()) {
-            if (!oldByName.containsKey(name)) {
-                Map<String,Object> element = newByName.get(name);
-                String type = element.containsKey('Type') ? String.valueOf(element.get('Type')) : 'Element';
-                out.add('+ Added ' + type + ': "' + name + '"');
-            }
-        }
-        
-        for (String name : oldByName.keySet()) {
-            if (!newByName.containsKey(name)) {
-                Map<String,Object> element = oldByName.get(name);
-                String type = element.containsKey('Type') ? String.valueOf(element.get('Type')) : 'Element';
-                out.add('- Removed ' + type + ': "' + name + '"');
-            }
-        }
-        
-        Set<String> skipElementFields = new Set<String>{
-            'SequenceNumber', 'Level', 'ParentElementName', 'IsActive'
-        };
-        
-        for (String name : newByName.keySet()) {
-            if (oldByName.containsKey(name)) {
-                Map<String,Object> oldItem = oldByName.get(name);
-                Map<String,Object> newItem = newByName.get(name);
-                
-                for (String key : newItem.keySet()) {
-                    if (skipElementFields.contains(key)) continue;
-                    
-                    Object oldVal = oldItem.get(key);
-                    Object newVal = newItem.get(key);
-                    
-                    if (oldVal == null && newVal == null) continue;
-                    if (String.valueOf(oldVal) == String.valueOf(newVal)) continue;
-                    
-                    if (key == 'PropertySetConfig') {
-                        out.add('~ Modified configuration in "' + name + '"');
-                    } else if (!skipElementFields.contains(key)) {
-                        out.add('~ Changed ' + key + ' in "' + name + '"');
-                    }
-                }
-            }
-        }
-        
-        return out;
-    }
-    
-    private static List<String> compareList(List<Object> a, List<Object> b, String prefix) {
-        List<String> out = new List<String>(); 
-        Integer max = Math.max(a == null ? 0 : a.size(), b == null ? 0 : b.size());
-        for (Integer i = 0; i < max; i++) {
-            String path = prefix + '[' + i + ']'; 
-            Boolean hasA = (a != null && i < a.size()), hasB = (b != null && i < b.size());
-            if (!hasA && hasB) out.add('+ Added ' + path + ' = ' + safeSerialize(b[i]));
-            else if (hasA && !hasB) out.add('- Removed ' + path + ' (was ' + safeSerialize(a[i]) + ')');
-            else if (hasA && hasB) {
-                Object av = a[i], bv = b[i]; 
-                if (String.valueOf(av) == String.valueOf(bv)) continue;
-                if (av instanceof Map<String,Object> && bv instanceof Map<String,Object>)
-                    out.addAll(compareRecursive((Map<String,Object>)av,(Map<String,Object>)bv,path));
-                else if (av instanceof List<Object> && bv instanceof List<Object>)
-                    out.addAll(compareList((List<Object>)av,(List<Object>)bv,path));
-                else out.add('~ Changed ' + path + ' from ' + safeSerialize(av) + ' → ' + safeSerialize(bv));
-            }
-        }
-        return out;
-    }
-    
-    private static String safeSerialize(Object obj) {
-        try {
-            return JSON.serialize(obj);
-        } catch (Exception e) {
-            return String.valueOf(obj);
-        }
-    }
-
     // CRITICAL: Element-focused AI Notes generation
     public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
         // CRITICAL: If no element changes, use fallback immediately
-        if (String.isBlank(elementChangesSummary)) {
+        if (String.isBlank(elementChangesSummary) || elementChangesSummary.contains('NO CHANGES')) {
             return '<div class="highlight-card">' +
                    '<div class="card-title">🎯 Key Changes</div>' +
                    '<ul><li>No element-level changes detected</li></ul>' +
@@ -234,8 +52,7 @@ public with sharing class DV_AINotesUtil {
             '• NO explanatory text outside cards\n\n' +
             'Component: ' + componentName + elementContext;
 
-        String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
-                          'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
+        String endpoint = 'callout:Gemini_API/v1beta/models/gemini-2.0-flash-exp:generateContent';
         
         Map<String,Object> payload = new Map<String,Object>{
             'contents' => new List<Object>{
@@ -248,10 +65,13 @@ public with sharing class DV_AINotesUtil {
         String html = null;
         try{
             HttpRequest req = new HttpRequest();
-            req.setMethod('POST'); req.setEndpoint(endpoint);
-            req.setHeader('Content-Type','application/json'); req.setTimeout(120000);
+            req.setMethod('POST'); 
+            req.setEndpoint(endpoint);
+            req.setHeader('Content-Type','application/json'); 
+            req.setTimeout(120000);
             req.setBody(JSON.serialize(payload));
-            Http http = new Http(); HttpResponse res = http.send(req);
+            Http http = new Http(); 
+            HttpResponse res = http.send(req);
             if(res.getStatusCode()==200){
                 String parsed = parseGeminiHtml(res.getBody());
                 if(!String.isBlank(parsed)) html = cleanForUi(parsed);
@@ -273,15 +93,8 @@ public with sharing class DV_AINotesUtil {
         List<String> removed = new List<String>();
         List<String> modified = new List<String>();
         
-        String currentSection = '';
         for (String line : lines) {
-            if (line.contains('=== ADDED')) {
-                currentSection = 'ADDED';
-            } else if (line.contains('=== REMOVED')) {
-                currentSection = 'REMOVED';
-            } else if (line.contains('=== MODIFIED')) {
-                currentSection = 'MODIFIED';
-            } else if (line.startsWith('+ ')) {
+            if (line.startsWith('+ ')) {
                 String content = line.substring(2).trim();
                 if (content.length() > 80) content = content.substring(0, 77) + '...';
                 added.add(content);
@@ -303,7 +116,6 @@ public with sharing class DV_AINotesUtil {
         if (totalChanges == 0) {
             keyChangesHtml += '<li>No element-level changes detected</li>';
         } else {
-            // Show max 3 items, prioritize added/removed over modified
             Integer itemsShown = 0;
             
             for (String item : added) {
@@ -392,5 +204,17 @@ public with sharing class DV_AINotesUtil {
         out = out.replaceAll('(?is)<style[\\s\\S]*?</style>','');
         out = out.replaceAll('`{1,3}','');
         return out;
+    }
+    
+    private static List<String> splitLines(String s){
+        if(s==null) return new List<String>();
+        String norm = s.replace('\r\n','\n');
+        return new List<String>(norm.split('\n', -1));
+    }
+    
+    // CRITICAL: No more deepDiff - we compare elements directly
+    public static String deepDiff(String oldJson, String newJson) {
+        // Deprecated - not used anymore
+        return '';
     }
 }

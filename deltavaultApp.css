@@ -1804,3 +1804,15 @@
   }
 }
 }
+.comparison-cell.empty-cell {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+}
+
+.comparison-cell.removed-cell.empty-cell {
+  background: var(--red-dim);
+  color: var(--red);
+  font-weight: 600;
+}

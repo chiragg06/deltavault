@@ -732,26 +732,58 @@ public with sharing class DV_Poller implements Schedulable {
         return String.join(parts, '\n');
     }
     
+    // FIXED: Helper to map family name to API object name (case-insensitive)
+    private static String getApiNameForFamily(String family) {
+        if (String.isBlank(family)) return null;
+        
+        family = family.toLowerCase();
+        
+        // FlexCard variations
+        if (family == 'flexcard' || family == 'card' || family == 'omniuicard') {
+            return 'OmniUiCard';
+        }
+        // OmniScript variations
+        else if (family == 'omniscript' || family == 'script' || family == 'omniprocess') {
+            return 'OmniProcess';
+        }
+        // DataRaptor variations (FIXED: accept both DataMapper and DataRaptor)
+        else if (family == 'datarapter' || family == 'dataraptor' || family == 'dr' || 
+                 family == 'datamapper' || family == 'omnidatatransform') {
+            return 'OmniDataTransform';
+        }
+        // Integration Procedure (stored as OmniProcess with SubType)
+        else if (family == 'integrationprocedure' || family == 'ip') {
+            return 'OmniProcess';
+        }
+        
+        return null;
+    }
+    
     @AuraEnabled
     public static void ingestBaseAllVersions(String family, String baseName) {
+        System.debug('[DEBUG] ingestBaseAllVersions called with family=' + family + ', baseName=' + baseName);
+        
+        String apiName = getApiNameForFamily(family);
+        if (String.isBlank(apiName)) {
+            System.debug('[DEBUG] ❌ Invalid family: ' + family);
+            throw new AuraHandledException('Invalid family: ' + family + '. Valid options: OmniProcess, Flexcard, DataMapper');
+        }
+        
+        System.debug('[DEBUG] ✅ Mapped family to API: ' + apiName);
+        
         Datetime nowTs = System.now();
         String actor = 'Baseline';
         
-        List<SObject> recs = new List<SObject>();
+        String soql = 'SELECT ' + DV_Util.fieldListFor(apiName) + ' FROM ' + apiName + ' LIMIT 50000';
+        System.debug('[DEBUG] Executing SOQL: ' + soql);
         
-        if (family == 'OmniProcess') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniProcess') + ' FROM OmniProcess LIMIT 50000');
-        } else if (family == 'Flexcard') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniUiCard') + ' FROM OmniUiCard LIMIT 50000');
-        } else if (family == 'DataMapper') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniDataTransform') + ' FROM OmniDataTransform LIMIT 50000');
-        } else {
-            throw new AuraHandledException('Unsupported family: ' + family);
-        }
+        List<SObject> recs = Database.query(soql);
+        System.debug('[DEBUG] Query returned ' + recs.size() + ' total records');
         
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
         
+        Integer matchCount = 0;
         for (SObject r : recs) {
             DV_Constants.CompType t = DV_Util.mapType(r);
             if (t == DV_Constants.CompType.Unknown || 
@@ -764,6 +796,9 @@ public with sharing class DV_Poller implements Schedulable {
             
             if (base != baseName) continue;
             
+            matchCount++;
+            System.debug('[DEBUG] Match #' + matchCount + ': ' + full);
+            
             afterBy.put(full, m);
             
             OmniComponent__c oc = new OmniComponent__c();
@@ -779,29 +814,38 @@ public with sharing class DV_Poller implements Schedulable {
             comps.put(full, oc);
         }
         
+        System.debug('[DEBUG] Total matches for baseName "' + baseName + '": ' + matchCount);
+        
         if (afterBy.isEmpty()) {
+            System.debug('[DEBUG] ❌ No versions found');
             throw new AuraHandledException('No versions found for ' + baseName + ' in ' + family + '.');
         }
         
+        System.debug('[DEBUG] ✅ Ingesting ' + afterBy.size() + ' versions');
         upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
+        System.debug('[DEBUG] ✅ Ingest complete');
     }
     
     @AuraEnabled
     public static void ingestAllByFamily(String family) {
+        System.debug('[DEBUG] ingestAllByFamily called with family=' + family);
+        
+        String apiName = getApiNameForFamily(family);
+        if (String.isBlank(apiName)) {
+            System.debug('[DEBUG] ❌ Invalid family: ' + family);
+            throw new AuraHandledException('Invalid family: ' + family + '. Valid options: OmniProcess, Flexcard, DataMapper, DataRaptor');
+        }
+        
+        System.debug('[DEBUG] ✅ Mapped family to API: ' + apiName);
+        
         Datetime nowTs = System.now();
         String actor = 'Manual Baseline';
         
-        List<SObject> recs;
+        String soql = 'SELECT ' + DV_Util.fieldListFor(apiName) + ' FROM ' + apiName + ' LIMIT 50000';
+        System.debug('[DEBUG] Executing SOQL: ' + soql);
         
-        if (family == 'OmniProcess') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniProcess') + ' FROM OmniProcess LIMIT 50000');
-        } else if (family == 'Flexcard') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniUiCard') + ' FROM OmniUiCard LIMIT 50000');
-        } else if (family == 'DataMapper') {
-            recs = Database.query('SELECT ' + DV_Util.fieldListFor('OmniDataTransform') + ' FROM OmniDataTransform LIMIT 50000');
-        } else {
-            throw new AuraHandledException('Unsupported family: ' + family);
-        }
+        List<SObject> recs = Database.query(soql);
+        System.debug('[DEBUG] Query returned ' + recs.size() + ' records');
         
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
@@ -831,8 +875,13 @@ public with sharing class DV_Poller implements Schedulable {
             comps.put(full, oc);
         }
         
+        System.debug('[DEBUG] Ingesting ' + afterBy.size() + ' components from family ' + family);
+        
         if (!afterBy.isEmpty()) {
             upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
+            System.debug('[DEBUG] ✅ FlexCard ingest complete');
+        } else {
+            System.debug('[DEBUG] No components found to ingest');
         }
     }
     

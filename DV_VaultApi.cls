@@ -34,7 +34,8 @@ public with sharing class DV_VaultApi {
         @AuraEnabled public String aiNotesHtml;
         @AuraEnabled public String diffText;
         @AuraEnabled public String rawJson;
-        @AuraEnabled public String elementChangesSummary; // NEW FIELD
+        @AuraEnabled public String elementChangesSummary;
+        @AuraEnabled public String elementsArray; // NEW: Clean element data
     }
     
     public class ContributorOption {
@@ -212,10 +213,10 @@ public with sharing class DV_VaultApi {
             whereClause += ' AND (ModifiedAt__c < :cTs OR (ModifiedAt__c = :cTs AND Id < :cId)) ';
         }
         
-        // UPDATED: Include ElementChangesSummary__c field
+        // CRITICAL: Include ElementsArray__c for clean element data
         List<OmniSnapshot__c> snaps = Database.query(
             'SELECT Id, ModifiedAt__c, ChangeType__c, Version__c, Source__c, ActorName__c, ' +
-            'AI_Notes_Markdown__c, DiffToPrev__c, RawJSON__c, ElementChangesSummary__c ' +
+            'AI_Notes_Markdown__c, DiffToPrev__c, RawJSON__c, ElementChangesSummary__c, ElementsArray__c ' +
             'FROM OmniSnapshot__c ' + whereClause +
             'ORDER BY ModifiedAt__c DESC, Id DESC LIMIT :pageSize'
         );
@@ -231,7 +232,8 @@ public with sharing class DV_VaultApi {
             r.aiNotesHtml = s.AI_Notes_Markdown__c;
             r.diffText = s.DiffToPrev__c;
             r.rawJson = s.RawJSON__c;
-            r.elementChangesSummary = s.ElementChangesSummary__c; // NEW
+            r.elementChangesSummary = s.ElementChangesSummary__c;
+            r.elementsArray = s.ElementsArray__c; // NEW: Clean element data
             
             page.items.add(r);
         }
@@ -243,5 +245,110 @@ public with sharing class DV_VaultApi {
         }
         
         return page;
+    }
+    
+    // CRITICAL: Helper method to compare element arrays for diff table
+    @AuraEnabled(cacheable=false)
+    public static Map<String, Object> getElementComparison(Id currentSnapshotId, Id previousSnapshotId) {
+        List<OmniSnapshot__c> snaps = [
+            SELECT Id, ElementsArray__c, Source__c
+            FROM OmniSnapshot__c
+            WHERE Id IN :new List<Id>{currentSnapshotId, previousSnapshotId}
+        ];
+        
+        if (snaps.size() < 2) {
+            return new Map<String, Object>{
+                'error' => 'Not enough snapshots to compare'
+            };
+        }
+        
+        OmniSnapshot__c current = snaps[0];
+        OmniSnapshot__c previous = snaps[1];
+        
+        List<Map<String, Object>> diffRows = new List<Map<String, Object>>();
+        
+        if (String.isNotBlank(current.ElementsArray__c) && String.isNotBlank(previous.ElementsArray__c)) {
+            List<Object> currElements = (List<Object>) JSON.deserializeUntyped(current.ElementsArray__c);
+            List<Object> prevElements = (List<Object>) JSON.deserializeUntyped(previous.ElementsArray__c);
+            
+            Map<String, Map<String, Object>> prevMap = new Map<String, Map<String, Object>>();
+            Map<String, Map<String, Object>> currMap = new Map<String, Map<String, Object>>();
+            
+            for (Object obj : prevElements) {
+                Map<String, Object> elem = (Map<String, Object>) obj;
+                String name = (String) elem.get('Name');
+                prevMap.put(name, elem);
+            }
+            
+            for (Object obj : currElements) {
+                Map<String, Object> elem = (Map<String, Object>) obj;
+                String name = (String) elem.get('Name');
+                currMap.put(name, elem);
+            }
+            
+            Set<String> allNames = new Set<String>();
+            allNames.addAll(prevMap.keySet());
+            allNames.addAll(currMap.keySet());
+            
+            for (String name : allNames) {
+                Map<String, Object> prevElem = prevMap.get(name);
+                Map<String, Object> currElem = currMap.get(name);
+                
+                Map<String, Object> row = new Map<String, Object>();
+                row.put('name', name);
+                
+                if (prevElem == null && currElem != null) {
+                    // Added
+                    row.put('status', 'added');
+                    row.put('previous', '');
+                    row.put('current', formatElement(currElem));
+                } else if (prevElem != null && currElem == null) {
+                    // Removed
+                    row.put('status', 'removed');
+                    row.put('previous', formatElement(prevElem));
+                    row.put('current', '');
+                } else if (JSON.serialize(prevElem) != JSON.serialize(currElem)) {
+                    // Modified
+                    row.put('status', 'modified');
+                    row.put('previous', formatElement(prevElem));
+                    row.put('current', formatElement(currElem));
+                } else {
+                    // Unchanged
+                    row.put('status', 'unchanged');
+                    row.put('previous', formatElement(prevElem));
+                    row.put('current', formatElement(currElem));
+                }
+                
+                diffRows.add(row);
+            }
+        }
+        
+        return new Map<String, Object>{
+            'diffRows' => diffRows,
+            'source' => current.Source__c
+        };
+    }
+    
+    private static String formatElement(Map<String, Object> elem) {
+        if (elem == null) return '';
+        
+        String name = (String) elem.get('Name');
+        String type = (String) elem.get('Type');
+        
+        String result = name + ' (' + type + ')';
+        
+        if (elem.containsKey('Level')) {
+            result += ' [Level: ' + elem.get('Level') + ']';
+        }
+        
+        if (elem.containsKey('InputFieldName')) {
+            result += ' [In: ' + elem.get('InputFieldName') + ']';
+        }
+        
+        if (elem.containsKey('OutputFieldName')) {
+            result += ' [Out: ' + elem.get('OutputFieldName') + ']';
+        }
+        
+        return result;
     }
 }

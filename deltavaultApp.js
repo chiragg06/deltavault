@@ -364,19 +364,35 @@ export default class DeltavaultApp extends LightningElement {
         });
     }
     
-    // CRITICAL: Render two-column comparison table
+    // UPDATED: renderComparisonTables to pass element arrays
     renderComparisonTables() {
-        this.historyItems.forEach(snap => {
+        this.historyItems.forEach((snap, index) => {
             const tableEl = this.template.querySelector(`[data-comparison-table-id="${snap.id}"]`);
-            if (tableEl && snap.elementChangesSummary && !tableEl.dataset.rendered) {
-                tableEl.innerHTML = this.buildComparisonTable(snap.elementChangesSummary);
+            if (tableEl && !tableEl.dataset.rendered) {
+                // Get previous snapshot's element array
+                let prevElementsArray = null;
+                if (index < this.historyItems.length - 1) {
+                    prevElementsArray = this.historyItems[index + 1].elementsArray;
+                }
+                
+                tableEl.innerHTML = this.buildComparisonTable(
+                    snap.elementChangesSummary,
+                    snap.elementsArray,
+                    prevElementsArray
+                );
                 tableEl.dataset.rendered = 'true';
             }
         });
     }
     
-    // Build two-column comparison table from ElementChangesSummary
-    buildComparisonTable(elementSummary) {
+    // UPDATED: buildComparisonTable with element array support
+    buildComparisonTable(elementSummary, elementsArray, prevElementsArray) {
+        // If we have clean element arrays, use them for precise comparison
+        if (elementsArray && prevElementsArray) {
+            return this.buildComparisonFromArrays(elementsArray, prevElementsArray);
+        }
+        
+        // Fallback: Use ElementChangesSummary text parsing
         if (!elementSummary) return '<p class="muted">No element changes detected.</p>';
         
         const lines = elementSummary.split('\n');
@@ -404,7 +420,6 @@ export default class DeltavaultApp extends LightningElement {
                 prevElements.push({ content, status: 'modified' });
                 currElements.push({ content, status: 'modified' });
             } else if (line.trim().startsWith('Details:') || line.trim().startsWith('Changes:')) {
-                // Append details to last element
                 if (currentSection === 'ADDED' && currElements.length > 0) {
                     currElements[currElements.length - 1].details = line.trim();
                 } else if (currentSection === 'REMOVED' && prevElements.length > 0) {
@@ -444,10 +459,10 @@ export default class DeltavaultApp extends LightningElement {
                 
                 if (prev.status === 'removed') {
                     prevClass += ' removed-cell';
-                    icon = '✖ ';
+                    icon = '❌ ';
                 } else if (prev.status === 'modified') {
                     prevClass += ' modified-cell';
-                    icon = '⟳ ';
+                    icon = '⚠️ ';
                 }
                 
                 html += `<td class="${prevClass}">${icon}${this.escapeHtml(prev.content)}`;
@@ -466,10 +481,10 @@ export default class DeltavaultApp extends LightningElement {
                 
                 if (curr.status === 'added') {
                     currClass += ' added-cell';
-                    icon = '+ ';
+                    icon = '✅ ';
                 } else if (curr.status === 'modified') {
                     currClass += ' modified-cell';
-                    icon = '^ ';
+                    icon = '⚠️ ';
                 }
                 
                 html += `<td class="${currClass}">${icon}${this.escapeHtml(curr.content)}`;
@@ -487,6 +502,127 @@ export default class DeltavaultApp extends LightningElement {
         html += '</tbody></table>';
         
         return html;
+    }
+    
+    // NEW METHOD: Build comparison from clean element arrays
+    // Shows ALL elements in both columns with +/- markers for changes
+    buildComparisonFromArrays(currArrayJson, prevArrayJson) {
+        try {
+            const currElements = JSON.parse(currArrayJson || '[]');
+            const prevElements = JSON.parse(prevArrayJson || '[]');
+            
+            // Build maps by element name
+            const prevMap = new Map();
+            const currMap = new Map();
+            
+            prevElements.forEach(elem => {
+                prevMap.set(elem.Name, elem);
+            });
+            
+            currElements.forEach(elem => {
+                currMap.set(elem.Name, elem);
+            });
+            
+            // Get all unique names sorted
+            const allNames = Array.from(new Set([...prevMap.keys(), ...currMap.keys()])).sort();
+            
+            let html = '<table class="comparison-table">';
+            html += '<thead><tr>';
+            html += '<th class="comparison-header prev-header">Previous State (All Elements)</th>';
+            html += '<th class="comparison-header curr-header">Current State (All Elements)</th>';
+            html += '</tr></thead>';
+            html += '<tbody>';
+            
+            for (const name of allNames) {
+                const prevElem = prevMap.get(name);
+                const currElem = currMap.get(name);
+                
+                html += '<tr class="comparison-row">';
+                
+                // Determine status
+                let status = 'unchanged';
+                if (!prevElem && currElem) {
+                    status = 'added';
+                } else if (prevElem && !currElem) {
+                    status = 'removed';
+                } else if (JSON.stringify(prevElem) !== JSON.stringify(currElem)) {
+                    status = 'modified';
+                }
+                
+                // Previous column - ALWAYS show if element existed
+                if (prevElem) {
+                    let prevClass = 'comparison-cell prev-cell';
+                    let icon = '';
+                    
+                    if (status === 'removed') {
+                        prevClass += ' removed-cell';
+                        icon = '- ';
+                    }
+                    
+                    html += `<td class="${prevClass}">${icon}${this.formatElement(prevElem)}</td>`;
+                } else {
+                    // Element didn't exist in previous - show empty with indication it's new
+                    html += '<td class="comparison-cell prev-cell empty-cell">(not present)</td>';
+                }
+                
+                // Current column - ALWAYS show if element exists
+                if (currElem) {
+                    let currClass = 'comparison-cell curr-cell';
+                    let icon = '';
+                    
+                    if (status === 'added') {
+                        currClass += ' added-cell';
+                        icon = '+ ';
+                    } else if (status === 'modified') {
+                        currClass += ' modified-cell';
+                        icon = '~ ';
+                    }
+                    
+                    html += `<td class="${currClass}">${icon}${this.formatElement(currElem)}</td>`;
+                } else {
+                    // Element was removed - show indication it was deleted
+                    html += '<td class="comparison-cell curr-cell empty-cell removed-cell">- (deleted)</td>';
+                }
+                
+                html += '</tr>';
+            }
+            
+            html += '</tbody></table>';
+            return html;
+            
+        } catch (error) {
+            console.error('Error building comparison from arrays:', error);
+            return '<p class="muted">Error displaying element comparison</p>';
+        }
+    }
+    
+    // Helper: Format element for display
+    formatElement(elem) {
+        if (!elem) return '';
+        
+        let text = `${elem.Name} (${elem.Type})`;
+        
+        if (elem.Level !== undefined) {
+            text += ` - Level ${elem.Level}`;
+        }
+        
+        if (elem.ParentElementName) {
+            text += ` under ${elem.ParentElementName}`;
+        }
+        
+        if (elem.InputFieldName || elem.OutputFieldName) {
+            let details = '<div class="cell-details">';
+            if (elem.InputFieldName) {
+                details += `Input: ${elem.InputFieldName}`;
+            }
+            if (elem.OutputFieldName) {
+                details += `${elem.InputFieldName ? ' → ' : ''}Output: ${elem.OutputFieldName}`;
+            }
+            details += '</div>';
+            text += details;
+        }
+        
+        return text;
     }
     
     escapeHtml(text) {

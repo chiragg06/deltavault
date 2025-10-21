@@ -184,11 +184,24 @@ public with sharing class DV_AINotesUtil {
 
     // CRITICAL: Element-focused AI Notes generation
     public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
-        // Build context from element changes summary
-        String elementContext = '';
-        if (!String.isBlank(elementChangesSummary)) {
-            elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
+        // CRITICAL: If no element changes, use fallback immediately
+        if (String.isBlank(elementChangesSummary)) {
+            return '<div class="highlight-card">' +
+                   '<div class="card-title">🎯 Key Changes</div>' +
+                   '<ul><li>No element-level changes detected</li></ul>' +
+                   '</div>' +
+                   '<div class="highlight-card warning">' +
+                   '<div class="card-title">⚠️ Risks</div>' +
+                   '<ul><li>Review configuration changes in other tabs</li></ul>' +
+                   '</div>' +
+                   '<div class="highlight-card success">' +
+                   '<div class="card-title">✅ Test This</div>' +
+                   '<ul><li>Verify component functionality is unchanged</li></ul>' +
+                   '</div>';
         }
+        
+        // Build context from element changes summary
+        String elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
         
         String prompt =
             'You are a senior Salesforce OmniStudio developer. Analyze ELEMENT CHANGES and provide THREE concise cards.\n\n' +
@@ -218,8 +231,7 @@ public with sharing class DV_AINotesUtil {
             '• For REMOVED: mention what was deleted\n' +
             '• For MODIFIED: mention configuration change\n' +
             '• NO generic statements - use actual element names\n' +
-            '• NO explanatory text outside cards\n' +
-            '• If no element changes, say "No element-level changes detected"\n\n' +
+            '• NO explanatory text outside cards\n\n' +
             'Component: ' + componentName + elementContext;
 
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
@@ -251,23 +263,7 @@ public with sharing class DV_AINotesUtil {
         if(!String.isBlank(html)) return html;
 
         // FALLBACK: Parse element changes summary directly
-        if (!String.isBlank(elementChangesSummary)) {
-            return buildFallbackHtmlFromElementSummary(elementChangesSummary);
-        }
-
-        // Final fallback
-        return '<div class="highlight-card">' +
-               '<div class="card-title">🎯 Key Changes</div>' +
-               '<ul><li>No element-level changes detected</li></ul>' +
-               '</div>' +
-               '<div class="highlight-card warning">' +
-               '<div class="card-title">⚠️ Risks</div>' +
-               '<ul><li>Review overall configuration changes</li></ul>' +
-               '</div>' +
-               '<div class="highlight-card success">' +
-               '<div class="card-title">✅ Test This</div>' +
-               '<ul><li>Verify component still functions correctly</li></ul>' +
-               '</div>';
+        return buildFallbackHtmlFromElementSummary(elementChangesSummary);
     }
 
     // CRITICAL: Build concise fallback summaries from ElementChangesSummary

@@ -95,7 +95,7 @@ public with sharing class DV_Util {
         
         putClean(rec, f, m, 'Language');
 
-        // Complex JSON fields - CRITICAL FIX: Handle as JSON objects, not strings
+        // Complex JSON fields - ALWAYS stored as cleaned text (no parsing)
         if (api == 'OmniUiCard') {
             putJsonField(rec, f, m, 'PropertySetConfig', PROPERTY_CONFIG_MAX);
             putJsonField(rec, f, m, 'DataSourceConfig', DATA_SOURCE_MAX);
@@ -173,7 +173,8 @@ public with sharing class DV_Util {
         }
     }
     
-    // CRITICAL FIX: Handle JSON fields properly - parse and store as objects
+    // CRITICAL FIX: For complex fields, ALWAYS store as cleaned text, never parse as JSON
+    // This prevents control character issues and makes diff comparison reliable
     private static void putJsonField(SObject rec, Map<String,Schema.SObjectField> f, Map<String,Object> out, String field, Integer maxLen) {
         if (!f.containsKey(field) || rec.get(field) == null) return;
         
@@ -182,17 +183,13 @@ public with sharing class DV_Util {
         // Clean control characters
         val = cleanStringForJson(val);
         
-        // Try to parse as JSON - if valid, store as object; if not, store as string
-        try {
-            Object parsed = JSON.deserializeUntyped(val);
-            out.put(field, parsed);
-        } catch (Exception e) {
-            // Not valid JSON - store as cleaned string
-            if (maxLen != null && val.length() > maxLen) {
-                val = val.substring(0, maxLen) + '\n... [TRUNCATED]';
-            }
-            out.put(field, val);
+        // ALWAYS store as text - never try to parse
+        // This ensures reliable diff comparison without JSON parsing errors
+        if (maxLen != null && val.length() > maxLen) {
+            val = val.substring(0, maxLen) + '\n... [TRUNCATED]';
         }
+        
+        out.put(field, val);
     }
     
     // Complex field - for non-JSON text fields

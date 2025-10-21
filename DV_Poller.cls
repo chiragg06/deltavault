@@ -44,11 +44,14 @@ public with sharing class DV_Poller implements Schedulable {
             String full = DV_Util.deriveFullName(r, t);
             String base = DV_Util.stripVersion(full);
             
-            // CRITICAL: Extract FlexCard elements from PropertySetConfig
-            if (t == DV_Constants.CompType.Flexcard && m.containsKey('PropertySetConfig')) {
-                ElementChangeSummary fcChanges = extractFlexCardElements(r.Id, m);
-                if (fcChanges != null) {
-                    changesByFull.put(full, fcChanges);
+            // For FlexCards: Extract changes from PropertySetConfig via AI
+            if (t == DV_Constants.CompType.Flexcard) {
+                Id componentId = getComponentIdForParent(r.Id, full);
+                if (componentId != null) {
+                    ElementChangeSummary fcChanges = analyzeFlexCardChanges(componentId, m);
+                    if (fcChanges != null) {
+                        changesByFull.put(full, fcChanges);
+                    }
                 }
             }
             
@@ -70,105 +73,10 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', null, null, changesByFull);
     }
     
-    // CRITICAL: Extract FlexCard elements from PropertySetConfig
-    private static ElementChangeSummary extractFlexCardElements(Id componentId, Map<String,Object> parentData) {
+    // CRITICAL: Analyze FlexCard PropertySetConfig changes using text comparison
+    private static ElementChangeSummary analyzeFlexCardChanges(Id componentId, Map<String,Object> currentData) {
         try {
-            if (!parentData.containsKey('PropertySetConfig')) return null;
-            
-            Object pscObj = parentData.get('PropertySetConfig');
-            if (pscObj == null) return null;
-            
-            Map<String,Object> psc;
-            if (pscObj instanceof String) {
-                psc = (Map<String,Object>) JSON.deserializeUntyped((String)pscObj);
-            } else {
-                psc = (Map<String,Object>) pscObj;
-            }
-            
-            Map<String, FCElement> currentElements = new Map<String, FCElement>();
-            
-            // Parse states array
-            if (psc.containsKey('states')) {
-                List<Object> states = (List<Object>) psc.get('states');
-                Integer stateIndex = 0;
-                
-                for (Object stateObj : states) {
-                    Map<String,Object> state = (Map<String,Object>) stateObj;
-                    String stateName = state.containsKey('name') ? String.valueOf(state.get('name')) : 'State' + stateIndex;
-                    
-                    parseFlexCardComponents(state, currentElements, stateName, '');
-                    stateIndex++;
-                }
-            }
-            
-            // Get previous elements from last snapshot
-            Map<String, FCElement> prevElements = getPreviousFlexCardElements(componentId);
-            
-            return compareFlexCardElements(prevElements, currentElements);
-            
-        } catch (Exception e) {
-            System.debug('Error extracting FlexCard elements: ' + e.getMessage());
-            return null;
-        }
-    }
-    
-    private static void parseFlexCardComponents(Map<String,Object> node, Map<String, FCElement> elements, String stateName, String path) {
-        if (!node.containsKey('components')) return;
-        
-        Map<String,Object> components = (Map<String,Object>) node.get('components');
-        
-        for (String layerKey : components.keySet()) {
-            Map<String,Object> layer = (Map<String,Object>) components.get(layerKey);
-            
-            if (layer.containsKey('children')) {
-                List<Object> children = (List<Object>) layer.get('children');
-                
-                for (Object childObj : children) {
-                    Map<String,Object> child = (Map<String,Object>) childObj;
-                    
-                    String elementName = child.containsKey('name') ? String.valueOf(child.get('name')) : 'Unknown';
-                    String elementType = child.containsKey('element') ? String.valueOf(child.get('element')) : 'Unknown';
-                    String elementLabel = '';
-                    
-                    if (child.containsKey('property')) {
-                        Map<String,Object> props = (Map<String,Object>) child.get('property');
-                        if (props.containsKey('label')) {
-                            elementLabel = String.valueOf(props.get('label'));
-                        }
-                        if (props.containsKey('propertyObj')) {
-                            Map<String,Object> propObj = (Map<String,Object>) props.get('propertyObj');
-                            if (propObj.containsKey('label')) {
-                                elementLabel = String.valueOf(propObj.get('label'));
-                            }
-                        }
-                    }
-                    
-                    String fullPath = String.isBlank(path) ? stateName : path + ' > ' + elementName;
-                    
-                    FCElement elem = new FCElement();
-                    elem.name = elementName;
-                    elem.type = elementType;
-                    elem.label = elementLabel;
-                    elem.stateName = stateName;
-                    elem.path = fullPath;
-                    
-                    String uniqueKey = fullPath + '|' + elementType;
-                    elements.put(uniqueKey, elem);
-                    
-                    // Recurse if nested
-                    if (child.containsKey('children')) {
-                        parseFlexCardComponents(child, elements, stateName, fullPath);
-                    }
-                }
-            }
-        }
-    }
-    
-    private static Map<String, FCElement> getPreviousFlexCardElements(Id componentId) {
-        Map<String, FCElement> result = new Map<String, FCElement>();
-        
-        try {
-            // Get SECOND most recent snapshot (first is current being created)
+            // Get previous snapshot's PropertySetConfig
             List<OmniSnapshot__c> snaps = [
                 SELECT RawJSON__c 
                 FROM OmniSnapshot__c 
@@ -178,95 +86,38 @@ public with sharing class DV_Poller implements Schedulable {
             ];
             
             if (snaps.size() < 2 || String.isBlank(snaps[1].RawJSON__c)) {
-                return result; // No previous snapshot
+                return null; // No previous snapshot to compare
             }
             
-            // CRITICAL FIX: Clean JSON before parsing
-            String cleanedJson = DV_Util.cleanStringForJson(snaps[1].RawJSON__c);
-            Map<String,Object> prevData = (Map<String,Object>) JSON.deserializeUntyped(cleanedJson);
+            String prevRaw = DV_Util.cleanStringForJson(snaps[1].RawJSON__c);
+            Map<String,Object> prevData = (Map<String,Object>) JSON.deserializeUntyped(prevRaw);
             
-            if (prevData.containsKey('PropertySetConfig')) {
-                Object pscObj = prevData.get('PropertySetConfig');
-                Map<String,Object> psc;
+            String prevPSC = prevData.containsKey('PropertySetConfig') ? String.valueOf(prevData.get('PropertySetConfig')) : '';
+            String currPSC = currentData.containsKey('PropertySetConfig') ? String.valueOf(currentData.get('PropertySetConfig')) : '';
+            
+            // If PropertySetConfig changed, note it
+            if (prevPSC != currPSC) {
+                ElementChangeSummary summary = new ElementChangeSummary();
+                summary.added = new List<ElementChange>();
+                summary.removed = new List<ElementChange>();
+                summary.modified = new List<ElementChange>();
                 
-                if (pscObj instanceof String) {
-                    String pscString = DV_Util.cleanStringForJson((String)pscObj);
-                    psc = (Map<String,Object>) JSON.deserializeUntyped(pscString);
-                } else {
-                    psc = (Map<String,Object>) pscObj;
-                }
+                ElementChange ec = new ElementChange();
+                ec.elementName = 'PropertySetConfig';
+                ec.elementType = 'FlexCard Configuration';
+                ec.parentElementName = 'Root';
+                ec.details = 'UI Configuration modified (' + 
+                            Math.abs(currPSC.length() - prevPSC.length()) + ' chars changed)';
+                summary.modified.add(ec);
                 
-                if (psc.containsKey('states')) {
-                    List<Object> states = (List<Object>) psc.get('states');
-                    Integer stateIndex = 0;
-                    
-                    for (Object stateObj : states) {
-                        Map<String,Object> state = (Map<String,Object>) stateObj;
-                        String stateName = state.containsKey('name') ? String.valueOf(state.get('name')) : 'State' + stateIndex;
-                        
-                        parseFlexCardComponents(state, result, stateName, '');
-                        stateIndex++;
-                    }
-                }
+                return summary;
             }
+            
+            return null;
         } catch (Exception e) {
-            System.debug('Error getting previous FlexCard elements: ' + e.getMessage());
-            System.debug('Stack trace: ' + e.getStackTraceString());
+            System.debug('Error analyzing FlexCard changes: ' + e.getMessage());
+            return null;
         }
-        
-        return result;
-    }
-    
-    private static ElementChangeSummary compareFlexCardElements(Map<String, FCElement> prev, Map<String, FCElement> curr) {
-        ElementChangeSummary summary = new ElementChangeSummary();
-        summary.added = new List<ElementChange>();
-        summary.removed = new List<ElementChange>();
-        summary.modified = new List<ElementChange>();
-        
-        // Find added
-        for (String key : curr.keySet()) {
-            if (!prev.containsKey(key)) {
-                FCElement elem = curr.get(key);
-                ElementChange ec = new ElementChange();
-                ec.elementName = elem.name;
-                ec.elementType = elem.type;
-                ec.parentElementName = elem.stateName;
-                ec.details = 'Label: ' + elem.label;
-                summary.added.add(ec);
-            }
-        }
-        
-        // Find removed
-        for (String key : prev.keySet()) {
-            if (!curr.containsKey(key)) {
-                FCElement elem = prev.get(key);
-                ElementChange ec = new ElementChange();
-                ec.elementName = elem.name;
-                ec.elementType = elem.type;
-                ec.parentElementName = elem.stateName;
-                ec.details = 'Label: ' + elem.label;
-                summary.removed.add(ec);
-            }
-        }
-        
-        // Find modified (same key but different properties)
-        for (String key : curr.keySet()) {
-            if (prev.containsKey(key)) {
-                FCElement prevElem = prev.get(key);
-                FCElement currElem = curr.get(key);
-                
-                if (prevElem.label != currElem.label || prevElem.path != currElem.path) {
-                    ElementChange ec = new ElementChange();
-                    ec.elementName = currElem.name;
-                    ec.elementType = currElem.type;
-                    ec.parentElementName = currElem.stateName;
-                    ec.details = 'Label changed: ' + prevElem.label + ' → ' + currElem.label;
-                    summary.modified.add(ec);
-                }
-            }
-        }
-        
-        return summary;
     }
     
     private static void processChild(String childApi, String parentLookup, String parentApi, String childTag, Datetime since) {
@@ -300,8 +151,9 @@ public with sharing class DV_Poller implements Schedulable {
             allChildrenByParent.get(pid).add(c);
         }
         
-        // CRITICAL FIX: Get previous state BEFORE we create new snapshots
+        // CRITICAL: Get previous state BEFORE we create new snapshots
         Map<Id, Map<String, Map<String,Object>>> prevChildMapByParent = getPreviousChildState(pids, childApi, parentLookup);
+        Map<Id, Map<String,Object>> prevParentDataByParent = getPreviousParentData(pids);
         
         System.debug('=== CHILD COMPARISON DEBUG ===');
         System.debug('Parent IDs being processed: ' + pids.size());
@@ -342,11 +194,19 @@ public with sharing class DV_Poller implements Schedulable {
             Map<String, Map<String,Object>> prevChildMap = prevChildMapByParent.get(componentId);
             if (prevChildMap == null) prevChildMap = new Map<String, Map<String,Object>>();
             
+            Map<String,Object> prevParentData = prevParentDataByParent.get(componentId);
+            if (prevParentData == null) prevParentData = new Map<String,Object>();
+            
             System.debug('Component: ' + full);
             System.debug('  Current children: ' + currentChildMap.keySet());
             System.debug('  Previous children: ' + prevChildMap.keySet());
             
-            ElementChangeSummary changeSummary = compareElements(prevChildMap, currentChildMap, childTag, p);
+            // CRITICAL: Compare both child elements AND parent-level changes
+            ElementChangeSummary changeSummary = compareElementsAndParent(
+                prevChildMap, currentChildMap, 
+                prevParentData, parentAfter,
+                childTag, p
+            );
             
             System.debug('  Changes detected: Added=' + changeSummary.added.size() + 
                         ', Removed=' + changeSummary.removed.size() + 
@@ -398,10 +258,6 @@ public with sharing class DV_Poller implements Schedulable {
     private static Map<Id, Map<String, Map<String,Object>>> getPreviousChildState(Set<Id> parentIds, String childApi, String parentLookup) {
         Map<Id, Map<String, Map<String,Object>>> result = new Map<Id, Map<String, Map<String,Object>>>();
         
-        // Build map of component IDs we're interested in
-        Map<Id, Id> parentIdToComponentId = new Map<Id, Id>();
-        
-        // Get components for these parent IDs
         List<OmniComponent__c> relevantComponents = [
             SELECT Id, FullName__c, OmniType__c 
             FROM OmniComponent__c 
@@ -409,11 +265,9 @@ public with sharing class DV_Poller implements Schedulable {
                 SELECT OmniComponent__c 
                 FROM OmniSnapshot__c 
                 WHERE OmniComponent__c != NULL
-                
             )
         ];
         
-        // Get the SECOND most recent snapshot per component (skip the current one being created)
         Map<Id, OmniSnapshot__c> prevByComponent = new Map<Id, OmniSnapshot__c>();
         
         for (OmniComponent__c comp : relevantComponents) {
@@ -425,23 +279,19 @@ public with sharing class DV_Poller implements Schedulable {
                 LIMIT 2
             ];
             
-            // Use the SECOND snapshot if it exists (first is the one we just created)
             if (compSnaps.size() > 1) {
                 prevByComponent.put(comp.Id, compSnaps[1]);
             } else if (compSnaps.size() == 1) {
-                // If only one exists, use it (this is a baseline)
                 prevByComponent.put(comp.Id, compSnaps[0]);
             }
         }
         
-        // Parse previous snapshots
         for (Id componentId : prevByComponent.keySet()) {
             OmniSnapshot__c snap = prevByComponent.get(componentId);
             
             if (String.isBlank(snap.RawJSON__c)) continue;
             
             try {
-                // CRITICAL FIX: Clean JSON before parsing
                 String cleanedJson = DV_Util.cleanStringForJson(snap.RawJSON__c);
                 Map<String,Object> snapData = (Map<String,Object>) JSON.deserializeUntyped(cleanedJson);
                 
@@ -465,17 +315,50 @@ public with sharing class DV_Poller implements Schedulable {
                 }
             } catch (Exception e) {
                 System.debug('Error parsing previous snapshot for ' + componentId + ': ' + e.getMessage());
-                System.debug('Raw JSON length: ' + (snap.RawJSON__c != null ? snap.RawJSON__c.length() : 0));
             }
         }
         
         return result;
     }
     
-    // ENHANCED: Extract more meaningful fields
-    private static ElementChangeSummary compareElements(
-        Map<String, Map<String,Object>> prevMap, 
-        Map<String, Map<String,Object>> currMap,
+    // NEW: Get previous parent-level data for comparison
+    private static Map<Id, Map<String,Object>> getPreviousParentData(Set<Id> parentIds) {
+        Map<Id, Map<String,Object>> result = new Map<Id, Map<String,Object>>();
+        
+        List<OmniComponent__c> relevantComponents = [
+            SELECT Id FROM OmniComponent__c 
+            WHERE Id IN (SELECT OmniComponent__c FROM OmniSnapshot__c WHERE OmniComponent__c != NULL)
+        ];
+        
+        for (OmniComponent__c comp : relevantComponents) {
+            List<OmniSnapshot__c> compSnaps = [
+                SELECT RawJSON__c 
+                FROM OmniSnapshot__c
+                WHERE OmniComponent__c = :comp.Id
+                ORDER BY ModifiedAt__c DESC
+                LIMIT 2
+            ];
+            
+            if (compSnaps.size() > 1 && !String.isBlank(compSnaps[1].RawJSON__c)) {
+                try {
+                    String cleanedJson = DV_Util.cleanStringForJson(compSnaps[1].RawJSON__c);
+                    Map<String,Object> snapData = (Map<String,Object>) JSON.deserializeUntyped(cleanedJson);
+                    result.put(comp.Id, snapData);
+                } catch (Exception e) {
+                    System.debug('Error parsing previous parent data: ' + e.getMessage());
+                }
+            }
+        }
+        
+        return result;
+    }
+    
+    // CRITICAL: Compare child elements AND parent-level fields
+    private static ElementChangeSummary compareElementsAndParent(
+        Map<String, Map<String,Object>> prevChildMap, 
+        Map<String, Map<String,Object>> currChildMap,
+        Map<String,Object> prevParentData,
+        Map<String,Object> currParentData,
         String childTag,
         SObject parent
     ) {
@@ -486,10 +369,12 @@ public with sharing class DV_Poller implements Schedulable {
         
         String parentElementName = parent.get('Name') != null ? String.valueOf(parent.get('Name')) : 'Root';
         
-        // Find added
-        for (String childName : currMap.keySet()) {
-            if (!prevMap.containsKey(childName)) {
-                Map<String,Object> childData = currMap.get(childName);
+        // === PART 1: Compare child elements ===
+        
+        // Find added child elements
+        for (String childName : currChildMap.keySet()) {
+            if (!prevChildMap.containsKey(childName)) {
+                Map<String,Object> childData = currChildMap.get(childName);
                 ElementChange ec = new ElementChange();
                 ec.elementName = childName;
                 ec.elementType = childData.containsKey('Type') ? String.valueOf(childData.get('Type')) : childTag;
@@ -499,10 +384,10 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        // Find removed
-        for (String childName : prevMap.keySet()) {
-            if (!currMap.containsKey(childName)) {
-                Map<String,Object> childData = prevMap.get(childName);
+        // Find removed child elements
+        for (String childName : prevChildMap.keySet()) {
+            if (!currChildMap.containsKey(childName)) {
+                Map<String,Object> childData = prevChildMap.get(childName);
                 ElementChange ec = new ElementChange();
                 ec.elementName = childName;
                 ec.elementType = childData.containsKey('Type') ? String.valueOf(childData.get('Type')) : childTag;
@@ -518,11 +403,11 @@ public with sharing class DV_Poller implements Schedulable {
             'CreatedById', 'LastModifiedById', 'MayEdit', 'IsDeleted', 'IsLocked'
         };
         
-        // Find modified
-        for (String childName : currMap.keySet()) {
-            if (prevMap.containsKey(childName)) {
-                Map<String,Object> prevData = prevMap.get(childName);
-                Map<String,Object> currData = currMap.get(childName);
+        // Find modified child elements
+        for (String childName : currChildMap.keySet()) {
+            if (prevChildMap.containsKey(childName)) {
+                Map<String,Object> prevData = prevChildMap.get(childName);
+                Map<String,Object> currData = currChildMap.get(childName);
                 
                 List<String> changes = new List<String>();
                 
@@ -535,7 +420,7 @@ public with sharing class DV_Poller implements Schedulable {
                     if (prevVal == null && currVal == null) continue;
                     if (String.valueOf(prevVal) == String.valueOf(currVal)) continue;
                     
-                    changes.add(key + ': ' + prevVal + ' → ' + currVal);
+                    changes.add(key + ': ' + truncateValue(prevVal) + ' → ' + truncateValue(currVal));
                 }
                 
                 if (!changes.isEmpty()) {
@@ -549,7 +434,91 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
+        // === PART 2: Compare parent-level fields ===
+        
+        // Fields to check based on component type
+        String componentType = String.valueOf(parent.getSObjectType().getDescribe().getName());
+        
+        if (componentType == 'OmniProcess') {
+            // Check OmniScript/IP parent fields
+            checkParentField(prevParentData, currParentData, 'CustomJavaScript', 'Custom JavaScript', summary);
+            checkParentField(prevParentData, currParentData, 'CustomHtmlTemplates', 'Custom HTML Templates', summary);
+            checkParentField(prevParentData, currParentData, 'IntegrationProcedureInput', 'IP Input Structure', summary);
+            checkParentField(prevParentData, currParentData, 'IntegrationProcedureOutput', 'IP Output Structure', summary);
+            checkParentField(prevParentData, currParentData, 'Language', 'Language', summary);
+            checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
+        } else if (componentType == 'OmniDataTransform') {
+            // Check DataRaptor parent fields
+            checkParentField(prevParentData, currParentData, 'Type', 'DataRaptor Type', summary);
+            checkParentField(prevParentData, currParentData, 'InputType', 'Input Type', summary);
+            checkParentField(prevParentData, currParentData, 'OutputType', 'Output Type', summary);
+            checkParentField(prevParentData, currParentData, 'SourceObject', 'Source Object', summary);
+            checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
+        }
+        
         return summary;
+    }
+    
+    // Helper: Check if a parent field changed
+    private static void checkParentField(
+        Map<String,Object> prevData, 
+        Map<String,Object> currData, 
+        String fieldName, 
+        String displayName,
+        ElementChangeSummary summary
+    ) {
+        Object prevVal = prevData.get(fieldName);
+        Object currVal = currData.get(fieldName);
+        
+        if (prevVal == null && currVal == null) return;
+        if (String.valueOf(prevVal) == String.valueOf(currVal)) return;
+        
+        ElementChange ec = new ElementChange();
+        ec.elementName = displayName;
+        ec.elementType = 'Parent Configuration';
+        ec.parentElementName = 'Root';
+        
+        if (prevVal == null) {
+            ec.details = 'Added: ' + truncateValue(currVal);
+        } else if (currVal == null) {
+            ec.details = 'Removed: ' + truncateValue(prevVal);
+        } else {
+            ec.details = 'Changed: ' + truncateValue(prevVal) + ' → ' + truncateValue(currVal);
+        }
+        
+        summary.modified.add(ec);
+    }
+    
+    // Helper: Check if a boolean parent field changed
+    private static void checkParentBooleanField(
+        Map<String,Object> prevData, 
+        Map<String,Object> currData, 
+        String fieldName, 
+        String displayName,
+        ElementChangeSummary summary
+    ) {
+        Object prevVal = prevData.get(fieldName);
+        Object currVal = currData.get(fieldName);
+        
+        if (prevVal == currVal) return;
+        
+        ElementChange ec = new ElementChange();
+        ec.elementName = displayName;
+        ec.elementType = 'Parent Configuration';
+        ec.parentElementName = 'Root';
+        ec.details = 'Changed: ' + prevVal + ' → ' + currVal;
+        
+        summary.modified.add(ec);
+    }
+    
+    // Helper: Truncate long values for display
+    private static String truncateValue(Object val) {
+        if (val == null) return 'null';
+        String str = String.valueOf(val);
+        if (str.length() > 50) {
+            return str.substring(0, 47) + '...';
+        }
+        return str;
     }
     
     private static String getParentElementName(Map<String,Object> childData, String defaultParent) {
@@ -878,13 +847,5 @@ public with sharing class DV_Poller implements Schedulable {
         public String elementType;
         public String parentElementName;
         public String details;
-    }
-    
-    public class FCElement {
-        public String name;
-        public String type;
-        public String label;
-        public String stateName;
-        public String path;
     }
 }

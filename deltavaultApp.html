@@ -202,7 +202,7 @@
               <!-- Tabs -->
               <div class="tabs">
                 <button class={summaryTabClass} data-tab="summary" onclick={switchTab}>Summary</button>
-                <button class={diffTabClass} data-tab="diff" onclick={switchTab}>Technical Diff</button>
+                <button class={diffTabClass} data-tab="diff" onclick={switchTab}>Element Changes</button>
                 <button class={timelineTabClass} data-tab="timeline" onclick={switchTab}>Timeline</button>
               </div>
 
@@ -235,76 +235,44 @@
                 </section>
               </template>
 
-<!-- DIFF TAB -->
-<template if:true={showDiff}>
-  <section class="tab-content">
-    <h1 class="title">{selectedComponentName} v{selectedVersion} - Technical Changes</h1>
-    
-    <template for:each={historyItems} for:item="snap">
-      <article key={snap.id} class="history-card">
-        <div class="history-header">
-          <div class="history-badges">
-            <span class="badge change">{snap.changeType}</span>
-            <span class="badge version">v{snap.version}</span>
-          </div>
-          <span class="history-date">{snap.formattedDate}</span>
-        </div>
-        
-        <!-- CRITICAL: Element Changes Table -->
-        <template if:true={snap.elementChangesSummary}>
-          <div class="diff-summary-card">
-            <div class="diff-summary-title">
-              <span>📊</span>
-              <span>Element Changes</span>
-            </div>
-            <div class="element-changes-container" data-element-table-id={snap.id}></div>
-          </div>
-        </template>
-        
-        <!-- Readable Summary (existing) -->
-        <div class="diff-summary-card">
-          <div class="diff-summary-title">
-            <span>📝</span>
-            <span>What Changed</span>
-          </div>
-          <div class="diff-summary-content" data-summary-id={snap.id}></div>
-        </div>
-        
-        <!-- Collapsible Detailed Changes (existing) -->
-        <div class="detailed-changes-section">
-          <div class="detailed-changes-header" data-id={snap.id} onclick={toggleDetailedChanges}>
-            <div class="detailed-changes-title-wrapper">
-              <span class="collapse-icon" data-icon-id={snap.id}>▼</span>
-              <h3 class="detailed-changes-title">
-                <span>🔍</span>
-                <span>Technical Details</span>
-              </h3>
-            </div>
-            <span class="expand-hint">Click to expand</span>
-          </div>
-          <div class="detailed-changes-body" data-body-id={snap.id}>
-            <div class="diff-viewer" data-diff-id={snap.id}></div>
-            <div class="detailed-changes-actions">
-              <button class="text-btn" data-id={snap.id} onclick={copyDiff}>Copy Raw Diff</button>
-              <button class="text-btn" data-id={snap.id} onclick={toggleRawJson}>
-                <template if:false={snap.showRawJson}>Show Raw JSON</template>
-                <template if:true={snap.showRawJson}>Hide Raw JSON</template>
-              </button>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Raw JSON (Collapsible) -->
-        <template if:true={snap.showRawJson}>
-          <div class="details-section">
-            <h4>Raw JSON</h4>
-            <pre class="block">{snap.rawJson}</pre>
-          </div>
-        </template>
-      </article>
-    </template>
-  </section>
-</template>
+              <!-- DIFF TAB - SIMPLIFIED TWO-COLUMN TABLE -->
+              <template if:true={showDiff}>
+                <section class="tab-content">
+                  <h1 class="title">{selectedComponentName} v{selectedVersion} - Element Changes</h1>
+                  
+                  <template for:each={historyItems} for:item="snap">
+                    <article key={snap.id} class="history-card">
+                      <div class="history-header">
+                        <div class="history-badges">
+                          <span class="badge change">{snap.changeType}</span>
+                          <span class="badge version">v{snap.version}</span>
+                        </div>
+                        <span class="history-date">{snap.formattedDate}</span>
+                      </div>
+                      
+                      <!-- TWO-COLUMN COMPARISON TABLE -->
+                      <div class="comparison-container">
+                        <div class="comparison-table-wrapper" data-comparison-table-id={snap.id}></div>
+                      </div>
+                      
+                      <!-- Raw JSON Toggle -->
+                      <div class="history-actions">
+                        <button class="text-btn" data-id={snap.id} onclick={toggleRawJson}>
+                          <template if:false={snap.showRawJson}>Show Raw JSON</template>
+                          <template if:true={snap.showRawJson}>Hide Raw JSON</template>
+                        </button>
+                      </div>
+                      
+                      <template if:true={snap.showRawJson}>
+                        <div class="details-section">
+                          <h4>Raw JSON</h4>
+                          <pre class="block">{snap.rawJson}</pre>
+                        </div>
+                      </template>
+                    </article>
+                  </template>
+                </section>
+              </template>
 
               <!-- TIMELINE TAB -->
               <template if:true={showTimeline}>

@@ -35,7 +35,6 @@ export default class DeltavaultApp extends LightningElement {
     
     @track activeTab = 'summary';
     @track statusText = 'Ready';
-    expandedSet = new Set();
     
     connectedCallback() {}
     
@@ -319,7 +318,6 @@ export default class DeltavaultApp extends LightningElement {
                     this.loadedSnapshotIds.add(x.id);
                     return {
                         ...x,
-                        isExpanded: false,
                         showRawJson: false,
                         formattedDate: this.formatDateTime(x.at)
                     };
@@ -327,7 +325,6 @@ export default class DeltavaultApp extends LightningElement {
             
             if (reset) {
                 this.historyItems = [];
-                this.expandedSet.clear();
                 this.loadedSnapshotIds = new Set();
                 incoming.forEach(x => this.loadedSnapshotIds.add(x.id));
             }
@@ -347,8 +344,7 @@ export default class DeltavaultApp extends LightningElement {
             
             setTimeout(() => {
                 this.renderAiNotes();
-                this.renderColorCodedDiff();
-                this.renderElementChangesTable();
+                this.renderComparisonTables();
             }, 100);
         } catch(e) {
             console.error('loadHistory error:', e);
@@ -368,292 +364,127 @@ export default class DeltavaultApp extends LightningElement {
         });
     }
     
-    // CRITICAL: New method to render element changes table
-    renderElementChangesTable() {
+    // CRITICAL: Render two-column comparison table
+    renderComparisonTables() {
         this.historyItems.forEach(snap => {
-            const tableEl = this.template.querySelector(`[data-element-table-id="${snap.id}"]`);
+            const tableEl = this.template.querySelector(`[data-comparison-table-id="${snap.id}"]`);
             if (tableEl && snap.elementChangesSummary && !tableEl.dataset.rendered) {
-                tableEl.innerHTML = this.buildElementChangesTable(snap.elementChangesSummary);
+                tableEl.innerHTML = this.buildComparisonTable(snap.elementChangesSummary);
                 tableEl.dataset.rendered = 'true';
             }
         });
     }
     
-    // CRITICAL: Parse ElementChangesSummary and build HTML table
-    buildElementChangesTable(elementSummary) {
+    // Build two-column comparison table from ElementChangesSummary
+    buildComparisonTable(elementSummary) {
         if (!elementSummary) return '<p class="muted">No element changes detected.</p>';
         
         const lines = elementSummary.split('\n');
-        let html = '<div class="element-changes-table">';
+        
+        const prevElements = [];
+        const currElements = [];
         
         let currentSection = '';
-        let hasChanges = false;
         
         for (let line of lines) {
             if (line.includes('=== ADDED')) {
-                if (currentSection) html += '</tbody></table>';
                 currentSection = 'ADDED';
-                html += '<h4 class="element-section-title added">✚ Added Elements</h4>';
-                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Parent</th></tr></thead><tbody>';
-                hasChanges = true;
             } else if (line.includes('=== REMOVED')) {
-                if (currentSection) html += '</tbody></table>';
                 currentSection = 'REMOVED';
-                html += '<h4 class="element-section-title removed">✖ Removed Elements</h4>';
-                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Parent</th></tr></thead><tbody>';
-                hasChanges = true;
             } else if (line.includes('=== MODIFIED')) {
-                if (currentSection) html += '</tbody></table>';
                 currentSection = 'MODIFIED';
-                html += '<h4 class="element-section-title modified">⟳ Modified Elements</h4>';
-                html += '<table class="element-table"><thead><tr><th>Element</th><th>Type</th><th>Changes</th></tr></thead><tbody>';
-                hasChanges = true;
-            } else if (line.startsWith('+ ') || line.startsWith('- ') || line.startsWith('~ ')) {
+            } else if (line.startsWith('+ ') && currentSection === 'ADDED') {
                 const content = line.substring(2).trim();
-                const rowClass = currentSection.toLowerCase();
+                currElements.push({ content, status: 'added' });
+            } else if (line.startsWith('- ') && currentSection === 'REMOVED') {
+                const content = line.substring(2).trim();
+                prevElements.push({ content, status: 'removed' });
+            } else if (line.startsWith('~ ') && currentSection === 'MODIFIED') {
+                const content = line.substring(2).trim();
+                prevElements.push({ content, status: 'modified' });
+                currElements.push({ content, status: 'modified' });
+            } else if (line.trim().startsWith('Details:') || line.trim().startsWith('Changes:')) {
+                // Append details to last element
+                if (currentSection === 'ADDED' && currElements.length > 0) {
+                    currElements[currElements.length - 1].details = line.trim();
+                } else if (currentSection === 'REMOVED' && prevElements.length > 0) {
+                    prevElements[prevElements.length - 1].details = line.trim();
+                } else if (currentSection === 'MODIFIED' && currElements.length > 0) {
+                    currElements[currElements.length - 1].details = line.trim();
+                    if (prevElements.length > 0) {
+                        prevElements[prevElements.length - 1].details = line.trim();
+                    }
+                }
+            }
+        }
+        
+        const maxRows = Math.max(prevElements.length, currElements.length);
+        
+        if (maxRows === 0) {
+            return '<p class="muted">No element changes detected.</p>';
+        }
+        
+        let html = '<table class="comparison-table">';
+        html += '<thead><tr>';
+        html += '<th class="comparison-header prev-header">Previous State</th>';
+        html += '<th class="comparison-header curr-header">Current State</th>';
+        html += '</tr></thead>';
+        html += '<tbody>';
+        
+        for (let i = 0; i < maxRows; i++) {
+            const prev = prevElements[i];
+            const curr = currElements[i];
+            
+            html += '<tr class="comparison-row">';
+            
+            // Previous column
+            if (prev) {
+                let prevClass = 'comparison-cell prev-cell';
+                let icon = '';
                 
-                if (currentSection === 'ADDED' || currentSection === 'REMOVED') {
-                    const match = content.match(/^(.+?)\s*\((.+?)\)\s*(?:under|from)?\s*(.*)$/);
-                    if (match) {
-                        const elementName = this.escapeHtml(match[1]);
-                        const elementType = this.escapeHtml(match[2]);
-                        const parent = match[3] ? this.escapeHtml(match[3]) : '-';
-                        html += `<tr class="element-row ${rowClass}">
-                            <td class="element-name">${elementName}</td>
-                            <td class="element-type">${elementType}</td>
-                            <td class="element-parent">${parent}</td>
-                        </tr>`;
-                    }
-                } else if (currentSection === 'MODIFIED') {
-                    const match = content.match(/^(.+?)\s*\((.+?)\)\s*-?\s*(.*)$/);
-                    if (match) {
-                        const elementName = this.escapeHtml(match[1]);
-                        const elementType = this.escapeHtml(match[2]);
-                        const changes = match[3] ? this.escapeHtml(match[3]) : 'Configuration updated';
-                        html += `<tr class="element-row ${rowClass}">
-                            <td class="element-name">${elementName}</td>
-                            <td class="element-type">${elementType}</td>
-                            <td class="element-changes">${changes}</td>
-                        </tr>`;
-                    }
+                if (prev.status === 'removed') {
+                    prevClass += ' removed-cell';
+                    icon = '✖ ';
+                } else if (prev.status === 'modified') {
+                    prevClass += ' modified-cell';
+                    icon = '⟳ ';
                 }
-            }
-        }
-        
-        if (currentSection) html += '</tbody></table>';
-        html += '</div>';
-        
-        return hasChanges ? html : '<p class="muted">No element changes detected.</p>';
-    }
-    
-    renderColorCodedDiff() {
-        this.historyItems.forEach(snap => {
-            const diffEl = this.template.querySelector(`.diff-viewer[data-diff-id="${snap.id}"]`);
-            if (diffEl && snap.diffText && !diffEl.dataset.rendered) {
-                diffEl.innerHTML = this.formatDiff(snap.diffText);
-                diffEl.dataset.rendered = 'true';
-            }
-            
-            const summaryEl = this.template.querySelector(`[data-summary-id="${snap.id}"]`);
-            if (summaryEl && snap.diffText && !summaryEl.dataset.rendered) {
-                summaryEl.innerHTML = this.generateReadableSummary(snap.diffText);
-                summaryEl.dataset.rendered = 'true';
-            }
-        });
-    }
-    // Continuation from Part 1...
-    
-    generateReadableSummary(diffText) {
-        if (!diffText) return '<p class="diff-summary-text">No changes detected.</p>';
-        
-        const lines = diffText.split('\n');
-        const changes = {
-            added: [],
-            removed: [],
-            changed: []
-        };
-        
-        for (let line of lines) {
-            if (line.includes('InputFieldName') || line.includes('OutputFieldName')) {
-                if (line.startsWith('+ Added')) {
-                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)[^"]*"([^"]+)"/);
-                    if (fieldMatch) {
-                        changes.added.push(`Field: ${fieldMatch[1]}`);
-                    }
-                } else if (line.startsWith('- Removed')) {
-                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)[^"]*"([^"]+)"/);
-                    if (fieldMatch) {
-                        changes.removed.push(`Field: ${fieldMatch[1]}`);
-                    }
-                } else if (line.startsWith('~ Changed')) {
-                    const fieldMatch = line.match(/(?:InputFieldName|OutputFieldName)/);
-                    if (fieldMatch) {
-                        changes.changed.push('Field mapping');
-                    }
+                
+                html += `<td class="${prevClass}">${icon}${this.escapeHtml(prev.content)}`;
+                if (prev.details) {
+                    html += `<div class="cell-details">${this.escapeHtml(prev.details)}</div>`;
                 }
-            }
-            else if (line.includes('childPayload') && line.includes('"Name"')) {
-                const nameMatch = line.match(/"Name"\s*:\s*"([^"]+)"/);
-                if (nameMatch) {
-                    const elementName = nameMatch[1];
-                    
-                    if (line.startsWith('+ Added')) {
-                        changes.added.push(`Element: ${elementName}`);
-                    } else if (line.startsWith('- Removed')) {
-                        changes.removed.push(`Element: ${elementName}`);
-                    }
-                }
-            }
-            else if (line.includes('childName') && !line.includes('childPayload')) {
-                if (line.startsWith('+ Added')) {
-                    const nameMatch = line.match(/"childName"\s*:\s*"([^"]+)"/);
-                    if (nameMatch) {
-                        changes.added.push(`Map Item: ${nameMatch[1]}`);
-                    }
-                } else if (line.startsWith('- Removed')) {
-                    const nameMatch = line.match(/"childName"\s*:\s*"([^"]+)"/);
-                    if (nameMatch) {
-                        changes.removed.push(`Map Item: ${nameMatch[1]}`);
-                    }
-                }
-            }
-            else if (line.startsWith('+ Added') || line.startsWith('- Removed') || line.startsWith('~ Changed')) {
-                const match = line.match(/^[+\-~]\s+(?:Added|Removed|Changed)\s+([A-Za-z0-9_\.]+)/);
-                if (match && !this.isTechnicalField(match[1]) && !line.includes('childPayload')) {
-                    const propName = match[1];
-                    if (line.startsWith('+ Added')) {
-                        changes.added.push(propName);
-                    } else if (line.startsWith('- Removed')) {
-                        changes.removed.push(propName);
-                    } else if (line.startsWith('~ Changed')) {
-                        changes.changed.push(propName);
-                    }
-                }
-            }
-        }
-        
-        changes.added = [...new Set(changes.added)];
-        changes.removed = [...new Set(changes.removed)];
-        changes.changed = [...new Set(changes.changed)];
-        
-        let html = '';
-        
-        const totalChanges = changes.added.length + changes.removed.length + changes.changed.length;
-        
-        if (totalChanges === 0) {
-            return '<p class="diff-summary-text">No significant changes detected.</p>';
-        }
-        
-        const parts = [];
-        if (changes.added.length > 0) parts.push(`<strong>${changes.added.length}</strong> addition${changes.added.length !== 1 ? 's' : ''}`);
-        if (changes.removed.length > 0) parts.push(`<strong>${changes.removed.length}</strong> removal${changes.removed.length !== 1 ? 's' : ''}`);
-        if (changes.changed.length > 0) parts.push(`<strong>${changes.changed.length}</strong> modification${changes.changed.length !== 1 ? 's' : ''}`);
-        
-        let summaryText = 'This change includes ';
-        if (parts.length === 1) {
-            summaryText += parts[0];
-        } else if (parts.length === 2) {
-            summaryText += parts[0] + ' and ' + parts[1];
-        } else {
-            summaryText += parts.slice(0, -1).join(', ') + ', and ' + parts[parts.length - 1];
-        }
-        summaryText += '.';
-        
-        html += `<p class="diff-summary-text">${summaryText}</p>`;
-        
-        html += '<ul class="diff-summary-list">';
-        
-        if (changes.added.length > 0) {
-            changes.added.forEach(name => {
-                html += `
-                    <li class="diff-summary-item added">
-                        <span class="change-icon added">✚</span>
-                        <span class="change-text">Added: <strong>${this.escapeHtml(name)}</strong></span>
-                    </li>
-                `;
-            });
-        }
-        
-        if (changes.removed.length > 0) {
-            changes.removed.forEach(name => {
-                html += `
-                    <li class="diff-summary-item removed">
-                        <span class="change-icon removed">✖</span>
-                        <span class="change-text">Removed: <strong>${this.escapeHtml(name)}</strong></span>
-                    </li>
-                `;
-            });
-        }
-        
-        if (changes.changed.length > 0) {
-            changes.changed.forEach(name => {
-                html += `
-                    <li class="diff-summary-item changed">
-                        <span class="change-icon changed">⟳</span>
-                        <span class="change-text">Modified: <strong>${this.escapeHtml(name)}</strong></span>
-                    </li>
-                `;
-            });
-        }
-        
-        html += '</ul>';
-        
-        return html;
-    }
-    
-    isTechnicalField(fieldName) {
-        const technicalFields = [
-            'childPayload', 'childPayloads', 'childTag', 'childName', 'childNames', 'childObject',
-            'PropertySetConfig', 'SequenceNumber', 'Level', 'ParentElementName',
-            'OmniProcessVersionNumber', 'IsActive', 'Active',
-            'GlobalKey', 'FormulaSequence', 'InputObjectQuerySequence', 'OutputCreationSequence',
-            'FilterGroup', 'IsDeleted', 'IsDisabled', 'IsLocked', 'IsRequiredForUpsert', 'IsUpsertKey',
-            'MayEdit', 'SystemModstamp', 'LastModifiedDate', 'LastReferencedDate', 'LastViewedDate',
-            'CreatedDate', 'CreatedById', 'LastModifiedById'
-        ];
-        return technicalFields.includes(fieldName);
-    }
-    
-    toggleDetailedChanges(e) {
-        const id = e.currentTarget.dataset.id;
-        
-        const bodyEl = this.template.querySelector(`[data-body-id="${id}"]`);
-        const iconEl = this.template.querySelector(`[data-icon-id="${id}"]`);
-        
-        if (bodyEl && iconEl) {
-            const isExpanded = bodyEl.classList.contains('expanded');
-            
-            if (isExpanded) {
-                bodyEl.classList.remove('expanded');
-                iconEl.classList.add('collapsed');
+                html += '</td>';
             } else {
-                bodyEl.classList.add('expanded');
-                iconEl.classList.remove('collapsed');
+                html += '<td class="comparison-cell prev-cell empty-cell"></td>';
             }
-        }
-    }
-    
-    formatDiff(diffText) {
-        if (!diffText) return '<div class="diff-line context">No changes</div>';
-        
-        const lines = diffText.split('\n');
-        let html = '';
-        
-        for (let line of lines) {
-            const escaped = this.escapeHtml(line);
             
-            if (line.startsWith('+ Added') || line.startsWith('+')) {
-                html += `<div class="diff-line added">✚ ${escaped}</div>`;
-            } else if (line.startsWith('- Removed') || line.startsWith('-')) {
-                html += `<div class="diff-line removed">✖ ${escaped}</div>`;
-            } else if (line.startsWith('~ Changed')) {
-                html += `<div class="diff-line changed">⟳ ${escaped}</div>`;
-            } else if (line.startsWith('===') || line.startsWith('---') || line.startsWith('+++')) {
-                html += `<div class="diff-line header">${escaped}</div>`;
+            // Current column
+            if (curr) {
+                let currClass = 'comparison-cell curr-cell';
+                let icon = '';
+                
+                if (curr.status === 'added') {
+                    currClass += ' added-cell';
+                    icon = '+ ';
+                } else if (curr.status === 'modified') {
+                    currClass += ' modified-cell';
+                    icon = '^ ';
+                }
+                
+                html += `<td class="${currClass}">${icon}${this.escapeHtml(curr.content)}`;
+                if (curr.details) {
+                    html += `<div class="cell-details">${this.escapeHtml(curr.details)}</div>`;
+                }
+                html += '</td>';
             } else {
-                html += `<div class="diff-line context">${escaped}</div>`;
+                html += '<td class="comparison-cell curr-cell empty-cell"></td>';
             }
+            
+            html += '</tr>';
         }
+        
+        html += '</tbody></table>';
         
         return html;
     }

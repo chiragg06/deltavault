@@ -29,7 +29,7 @@ public with sharing class DV_AINotesUtil {
         Set<String> skipFields = new Set<String>{
             'childNames', 'childTag', 'childObject',
             'Language', 'VersionNumber', 'OmniScriptVersionNumber', 'OmniProcessVersionNumber',
-            'SubType', 'Type', 'IsActive', 'Active'
+            'SubType', 'Type', 'IsActive', 'Active', 'SequenceNumber', 'Level'
         };
         
         for (String k : keys) {
@@ -182,45 +182,45 @@ public with sharing class DV_AINotesUtil {
         }
     }
 
-    // CRITICAL FIX: Updated to use ElementChangesSummary__c field
+    // CRITICAL: Element-focused AI Notes generation
     public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
-        // Build context from element changes summary if available
+        // Build context from element changes summary
         String elementContext = '';
         if (!String.isBlank(elementChangesSummary)) {
             elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
         }
         
         String prompt =
-            'You are a senior Salesforce OmniStudio developer reviewing component changes. ' +
-            'Analyze the ELEMENT CHANGES and provide ULTRA-CONCISE bullet points for busy developers.\n\n' +
-            'CRITICAL FORMAT REQUIREMENTS:\n' +
-            '1. Return ONLY HTML using these tags: <div>, <ul>, <li>, <strong>, <span>\n' +
-            '2. Create 3 highlight cards with this EXACT structure:\n' +
+            'You are a senior Salesforce OmniStudio developer. Analyze ELEMENT CHANGES and provide THREE concise cards.\n\n' +
+            'CRITICAL FORMAT:\n' +
+            '1. Return ONLY HTML using: <div>, <ul>, <li>, <strong>\n' +
+            '2. Create 3 cards with EXACT structure:\n\n' +
             '<div class="highlight-card">\n' +
             '  <div class="card-title">🎯 Key Changes</div>\n' +
             '  <ul>\n' +
-            '    <li>Specific element added/removed/modified (max 10 words)</li>\n' +
+            '    <li>Brief one-liner about element change (max 12 words)</li>\n' +
             '    <li>Another specific change</li>\n' +
             '  </ul>\n' +
             '</div>\n' +
             '<div class="highlight-card warning">\n' +
             '  <div class="card-title">⚠️ Risks</div>\n' +
-            '  <ul><li>Specific risk related to element changes (max 10 words)</li></ul>\n' +
+            '  <ul><li>Specific risk (max 12 words)</li></ul>\n' +
             '</div>\n' +
             '<div class="highlight-card success">\n' +
             '  <div class="card-title">✅ Test This</div>\n' +
-            '  <ul><li>Specific test scenario for changed elements (max 10 words)</li></ul>\n' +
+            '  <ul><li>Specific test scenario (max 12 words)</li></ul>\n' +
             '</div>\n\n' +
             'RULES:\n' +
-            '• Each bullet: MAX 10 words\n' +
-            '• Focus on ELEMENT names from ELEMENT CHANGES section\n' +
-            '• Be specific: "Added Email element to Step2" NOT "added a field"\n' +
-            '• For REMOVED elements, mention what was deleted\n' +
-            '• For MODIFIED elements, mention what configuration changed\n' +
+            '• Each bullet: MAX 12 words\n' +
+            '• Focus ONLY on elements from ELEMENT CHANGES section\n' +
+            '• Be specific: "Added Email element to Step2" NOT "added field"\n' +
+            '• For ADDED: mention element name and parent\n' +
+            '• For REMOVED: mention what was deleted\n' +
+            '• For MODIFIED: mention configuration change\n' +
             '• NO generic statements - use actual element names\n' +
-            '• NO explanatory text outside cards\n\n' +
-            'Component: ' + componentName + elementContext +
-            '\n\n=== TECHNICAL DIFF (Reference Only) ===\n' + (diff==null?'':diff.left(8000));
+            '• NO explanatory text outside cards\n' +
+            '• If no element changes, say "No element-level changes detected"\n\n' +
+            'Component: ' + componentName + elementContext;
 
         String endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
                           'AIzaSyA-SlQd2BKEyFAfzLPylzpP0vhmRohS6D0';
@@ -256,27 +256,21 @@ public with sharing class DV_AINotesUtil {
         }
 
         // Final fallback
-        Integer adds=0, dels=0;
-        for(String line : splitLines(diff)){ 
-            if(line!=null && line.startsWith('+ ')) adds++; 
-            else if(line!=null && line.startsWith('- ')) dels++; 
-        }
-        
         return '<div class="highlight-card">' +
                '<div class="card-title">🎯 Key Changes</div>' +
-               '<ul><li>' + adds + ' additions, ' + dels + ' removals</li></ul>' +
+               '<ul><li>No element-level changes detected</li></ul>' +
                '</div>' +
                '<div class="highlight-card warning">' +
                '<div class="card-title">⚠️ Risks</div>' +
-               '<ul><li>Review data mappings and flow logic</li></ul>' +
+               '<ul><li>Review overall configuration changes</li></ul>' +
                '</div>' +
                '<div class="highlight-card success">' +
                '<div class="card-title">✅ Test This</div>' +
-               '<ul><li>Test affected steps and integrations</li></ul>' +
+               '<ul><li>Verify component still functions correctly</li></ul>' +
                '</div>';
     }
 
-    // CRITICAL: Parse ElementChangesSummary to build fallback HTML
+    // CRITICAL: Build concise fallback summaries from ElementChangesSummary
     private static String buildFallbackHtmlFromElementSummary(String elementSummary) {
         List<String> lines = splitLines(elementSummary);
         List<String> added = new List<String>();
@@ -292,56 +286,77 @@ public with sharing class DV_AINotesUtil {
             } else if (line.contains('=== MODIFIED')) {
                 currentSection = 'MODIFIED';
             } else if (line.startsWith('+ ')) {
-                added.add(line.substring(2).trim());
+                String content = line.substring(2).trim();
+                if (content.length() > 80) content = content.substring(0, 77) + '...';
+                added.add(content);
             } else if (line.startsWith('- ')) {
-                removed.add(line.substring(2).trim());
+                String content = line.substring(2).trim();
+                if (content.length() > 80) content = content.substring(0, 77) + '...';
+                removed.add(content);
             } else if (line.startsWith('~ ')) {
-                modified.add(line.substring(2).trim());
+                String content = line.substring(2).trim();
+                if (content.length() > 80) content = content.substring(0, 77) + '...';
+                modified.add(content);
             }
         }
         
+        // Build Key Changes card
         String keyChangesHtml = '<div class="highlight-card"><div class="card-title">🎯 Key Changes</div><ul>';
-        if (!added.isEmpty()) {
+        
+        Integer totalChanges = added.size() + removed.size() + modified.size();
+        if (totalChanges == 0) {
+            keyChangesHtml += '<li>No element-level changes detected</li>';
+        } else {
+            // Show max 3 items, prioritize added/removed over modified
+            Integer itemsShown = 0;
+            
             for (String item : added) {
-                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                if (itemsShown >= 3) break;
                 keyChangesHtml += '<li>Added: ' + escapeHtml(item) + '</li>';
+                itemsShown++;
             }
-        }
-        if (!removed.isEmpty()) {
+            
             for (String item : removed) {
-                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                if (itemsShown >= 3) break;
                 keyChangesHtml += '<li>Removed: ' + escapeHtml(item) + '</li>';
+                itemsShown++;
             }
-        }
-        if (!modified.isEmpty()) {
+            
             for (String item : modified) {
-                if (item.length() > 60) item = item.substring(0, 57) + '...';
+                if (itemsShown >= 3) break;
                 keyChangesHtml += '<li>Modified: ' + escapeHtml(item) + '</li>';
+                itemsShown++;
+            }
+            
+            if (totalChanges > 3) {
+                keyChangesHtml += '<li>' + (totalChanges - 3) + ' more changes</li>';
             }
         }
         keyChangesHtml += '</ul></div>';
         
+        // Build Risks card
         String risksHtml = '<div class="highlight-card warning"><div class="card-title">⚠️ Risks</div><ul>';
-        if (!removed.isEmpty()) {
-            risksHtml += '<li>Removed elements may break integrations</li>';
-        }
-        if (!modified.isEmpty()) {
-            risksHtml += '<li>Configuration changes need testing</li>';
-        }
-        if (removed.isEmpty() && modified.isEmpty()) {
-            risksHtml += '<li>Test new element functionality</li>';
+        if (removed.size() > 0) {
+            risksHtml += '<li>Removed elements may break dependent flows</li>';
+        } else if (modified.size() > 0) {
+            risksHtml += '<li>Configuration changes need validation testing</li>';
+        } else if (added.size() > 0) {
+            risksHtml += '<li>New elements need integration testing</li>';
+        } else {
+            risksHtml += '<li>Review configuration for unexpected changes</li>';
         }
         risksHtml += '</ul></div>';
         
+        // Build Test This card
         String testHtml = '<div class="highlight-card success"><div class="card-title">✅ Test This</div><ul>';
-        if (!added.isEmpty()) {
-            testHtml += '<li>Verify new elements function correctly</li>';
-        }
-        if (!removed.isEmpty()) {
-            testHtml += '<li>Check dependent flows still work</li>';
-        }
-        if (!modified.isEmpty()) {
+        if (added.size() > 0) {
+            testHtml += '<li>Verify new elements function as expected</li>';
+        } else if (removed.size() > 0) {
+            testHtml += '<li>Check dependent components still work</li>';
+        } else if (modified.size() > 0) {
             testHtml += '<li>Test modified element configurations</li>';
+        } else {
+            testHtml += '<li>Run full regression test suite</li>';
         }
         testHtml += '</ul></div>';
         

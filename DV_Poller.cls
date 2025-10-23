@@ -44,7 +44,7 @@ public with sharing class DV_Poller implements Schedulable {
             String full = DV_Util.deriveFullName(r, t);
             String base = DV_Util.stripVersion(full);
             
-            // For FlexCards: Extract changes from PropertySetConfig via AI
+            // CRITICAL: For FlexCards ONLY - Extract changes from PropertySetConfig via AI
             if (t == DV_Constants.CompType.Flexcard) {
                 Id componentId = getComponentIdForParent(r.Id, full);
                 if (componentId != null) {
@@ -54,6 +54,7 @@ public with sharing class DV_Poller implements Schedulable {
                     }
                 }
             }
+            // DO NOT analyze PropertySetConfig for OmniProcess or DataMapper - they use element tracking
             
             afterBy.put(full, m);
             
@@ -353,7 +354,7 @@ public with sharing class DV_Poller implements Schedulable {
         return result;
     }
     
-    // CRITICAL: Compare child elements AND parent-level fields
+    // CRITICAL: Compare child elements AND parent-level fields (but NOT PropertySetConfig for OmniProcess/DataRaptor)
     private static ElementChangeSummary compareElementsAndParent(
         Map<String, Map<String,Object>> prevChildMap, 
         Map<String, Map<String,Object>> currChildMap,
@@ -434,13 +435,12 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        // === PART 2: Compare parent-level fields ===
+        // === PART 2: Compare parent-level fields (EXCLUDING PropertySetConfig for OmniProcess/DataRaptor) ===
         
-        // Fields to check based on component type
         String componentType = String.valueOf(parent.getSObjectType().getDescribe().getName());
         
         if (componentType == 'OmniProcess') {
-            // Check OmniScript/IP parent fields
+            // Check OmniScript/IP parent fields - NO PropertySetConfig
             checkParentField(prevParentData, currParentData, 'CustomJavaScript', 'Custom JavaScript', summary);
             checkParentField(prevParentData, currParentData, 'CustomHtmlTemplates', 'Custom HTML Templates', summary);
             checkParentField(prevParentData, currParentData, 'IntegrationProcedureInput', 'IP Input Structure', summary);
@@ -448,13 +448,14 @@ public with sharing class DV_Poller implements Schedulable {
             checkParentField(prevParentData, currParentData, 'Language', 'Language', summary);
             checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
         } else if (componentType == 'OmniDataTransform') {
-            // Check DataRaptor parent fields
+            // Check DataRaptor parent fields - NO PropertySetConfig
             checkParentField(prevParentData, currParentData, 'Type', 'DataRaptor Type', summary);
             checkParentField(prevParentData, currParentData, 'InputType', 'Input Type', summary);
             checkParentField(prevParentData, currParentData, 'OutputType', 'Output Type', summary);
             checkParentField(prevParentData, currParentData, 'SourceObject', 'Source Object', summary);
             checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
         }
+        // For OmniUiCard (FlexCard), PropertySetConfig is handled separately in analyzeFlexCardChanges()
         
         return summary;
     }

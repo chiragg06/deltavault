@@ -507,94 +507,87 @@ export default class DeltavaultApp extends LightningElement {
     // NEW METHOD: Build comparison from clean element arrays
     // Shows ALL elements in both columns with +/- markers for changes
     buildComparisonFromArrays(currArrayJson, prevArrayJson) {
-        try {
-            const currElements = JSON.parse(currArrayJson || '[]');
-            const prevElements = JSON.parse(prevArrayJson || '[]');
+    try {
+        const currElements = JSON.parse(currArrayJson || '[]');
+        const prevElements = JSON.parse(prevArrayJson || '[]');
+        
+        // Build maps by element name
+        const prevMap = new Map();
+        const currMap = new Map();
+        
+        prevElements.forEach(elem => {
+            prevMap.set(elem.Name, elem);
+        });
+        
+        currElements.forEach(elem => {
+            currMap.set(elem.Name, elem);
+        });
+        
+        // Get all unique names sorted
+        const allNames = Array.from(new Set([...prevMap.keys(), ...currMap.keys()])).sort();
+        
+        let html = '<table class="comparison-table">';
+        html += '<thead><tr>';
+        html += '<th class="comparison-header prev-header">Previous State</th>';
+        html += '<th class="comparison-header curr-header">Current State (Changes)</th>';
+        html += '</tr></thead>';
+        html += '<tbody>';
+        
+        for (const name of allNames) {
+            const prevElem = prevMap.get(name);
+            const currElem = currMap.get(name);
             
-            // Build maps by element name
-            const prevMap = new Map();
-            const currMap = new Map();
+            html += '<tr class="comparison-row">';
             
-            prevElements.forEach(elem => {
-                prevMap.set(elem.Name, elem);
-            });
-            
-            currElements.forEach(elem => {
-                currMap.set(elem.Name, elem);
-            });
-            
-            // Get all unique names sorted
-            const allNames = Array.from(new Set([...prevMap.keys(), ...currMap.keys()])).sort();
-            
-            let html = '<table class="comparison-table">';
-            html += '<thead><tr>';
-            html += '<th class="comparison-header prev-header">Previous State (All Elements)</th>';
-            html += '<th class="comparison-header curr-header">Current State (All Elements)</th>';
-            html += '</tr></thead>';
-            html += '<tbody>';
-            
-            for (const name of allNames) {
-                const prevElem = prevMap.get(name);
-                const currElem = currMap.get(name);
-                
-                html += '<tr class="comparison-row">';
-                
-                // Determine status
-                let status = 'unchanged';
-                if (!prevElem && currElem) {
-                    status = 'added';
-                } else if (prevElem && !currElem) {
-                    status = 'removed';
-                } else if (JSON.stringify(prevElem) !== JSON.stringify(currElem)) {
-                    status = 'modified';
-                }
-                
-                // Previous column - ALWAYS show if element existed
-                if (prevElem) {
-                    let prevClass = 'comparison-cell prev-cell';
-                    let icon = '';
-                    
-                    if (status === 'removed') {
-                        prevClass += ' removed-cell';
-                        icon = '- ';
-                    }
-                    
-                    html += `<td class="${prevClass}">${icon}${this.formatElement(prevElem)}</td>`;
-                } else {
-                    // Element didn't exist in previous - show empty with indication it's new
-                    html += '<td class="comparison-cell prev-cell empty-cell">(not present)</td>';
-                }
-                
-                // Current column - ALWAYS show if element exists
-                if (currElem) {
-                    let currClass = 'comparison-cell curr-cell';
-                    let icon = '';
-                    
-                    if (status === 'added') {
-                        currClass += ' added-cell';
-                        icon = '+ ';
-                    } else if (status === 'modified') {
-                        currClass += ' modified-cell';
-                        icon = '~ ';
-                    }
-                    
-                    html += `<td class="${currClass}">${icon}${this.formatElement(currElem)}</td>`;
-                } else {
-                    // Element was removed - show indication it was deleted
-                    html += '<td class="comparison-cell curr-cell empty-cell removed-cell">- (deleted)</td>';
-                }
-                
-                html += '</tr>';
+            // Determine status
+            let status = 'unchanged';
+            if (!prevElem && currElem) {
+                status = 'added';
+            } else if (prevElem && !currElem) {
+                status = 'removed';
+            } else if (JSON.stringify(prevElem) !== JSON.stringify(currElem)) {
+                status = 'modified';
             }
             
-            html += '</tbody></table>';
-            return html;
+            // LEFT COLUMN: Previous state (NO annotations)
+            if (prevElem) {
+                let prevClass = 'comparison-cell prev-cell';
+                html += `<td class="${prevClass}">${this.formatElement(prevElem)}</td>`;
+            } else {
+                html += '<td class="comparison-cell prev-cell empty-cell">(not present)</td>';
+            }
             
-        } catch (error) {
-            console.error('Error building comparison from arrays:', error);
-            return '<p class="muted">Error displaying element comparison</p>';
+            // RIGHT COLUMN: Current state (WITH +/- annotations)
+            if (currElem) {
+                let currClass = 'comparison-cell curr-cell';
+                let icon = '';
+                
+                if (status === 'added') {
+                    currClass += ' added-cell';
+                    icon = '+ '; // ADDED annotation
+                } else if (status === 'modified') {
+                    currClass += ' modified-cell';
+                    icon = '~ '; // MODIFIED annotation
+                }
+                // NO icon for unchanged elements
+                
+                html += `<td class="${currClass}">${icon}${this.formatElement(currElem)}</td>`;
+            } else {
+                // Element was removed - show indication
+                html += '<td class="comparison-cell curr-cell empty-cell removed-cell">- (deleted)</td>';
+            }
+            
+            html += '</tr>';
         }
+        
+        html += '</tbody></table>';
+        return html;
+        
+    } catch (error) {
+        console.error('Error building comparison from arrays:', error);
+        return '<p class="muted">Error displaying element comparison</p>';
     }
+}
     
     // Helper: Format element for display
     formatElement(elem) {

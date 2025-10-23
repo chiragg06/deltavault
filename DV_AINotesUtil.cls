@@ -1,6 +1,10 @@
 public with sharing class DV_AINotesUtil {
 
-    // CRITICAL: Element-focused AI Notes generation
+    // CRITICAL: Direct API key - REPLACE THIS WITH YOUR ACTUAL GEMINI API KEY
+    private static final String GEMINI_API_KEY = 'AIzaSyB2AWIUftI0djCtlGC31xB_P3ACgSN8wO4';
+    private static final String GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent';
+
+    // CRITICAL: Element-focused AI Notes generation - ONLY shows added/removed, not all elements
     public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
         // CRITICAL: If no element changes, use fallback immediately
         if (String.isBlank(elementChangesSummary) || elementChangesSummary.contains('NO CHANGES')) {
@@ -18,7 +22,7 @@ public with sharing class DV_AINotesUtil {
                    '</div>';
         }
         
-        // Build context from element changes summary
+        // Build context from element changes summary - ONLY added/removed sections
         String elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
         
         String prompt =
@@ -43,41 +47,47 @@ public with sharing class DV_AINotesUtil {
             '</div>\n\n' +
             'RULES:\n' +
             '• Each bullet: MAX 12 words\n' +
-            '• Focus ONLY on elements from ELEMENT CHANGES section\n' +
+            '• Focus ONLY on ADDED/REMOVED elements from ELEMENT CHANGES section\n' +
+            '• IGNORE modified elements - only report additions and deletions\n' +
             '• Be specific: "Added Email element to Step2" NOT "added field"\n' +
             '• For ADDED: mention element name and parent\n' +
             '• For REMOVED: mention what was deleted\n' +
-            '• For MODIFIED: mention configuration change\n' +
             '• NO generic statements - use actual element names\n' +
             '• NO explanatory text outside cards\n\n' +
             'Component: ' + componentName + elementContext;
-
-        String endpoint = 'callout:Gemini_API/v1beta/models/gemini-2.0-flash-exp:generateContent';
-        
-        Map<String,Object> payload = new Map<String,Object>{
-            'contents' => new List<Object>{
-                new Map<String,Object>{
-                    'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
-                }
-            }
-        };
 
         String html = null;
         try{
             HttpRequest req = new HttpRequest();
             req.setMethod('POST'); 
-            req.setEndpoint(endpoint);
+            req.setEndpoint(GEMINI_ENDPOINT + '?key=' + GEMINI_API_KEY); // Direct API key in URL
             req.setHeader('Content-Type','application/json'); 
             req.setTimeout(120000);
+            
+            Map<String,Object> payload = new Map<String,Object>{
+                'contents' => new List<Object>{
+                    new Map<String,Object>{
+                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
+                    }
+                }
+            };
+            
             req.setBody(JSON.serialize(payload));
             Http http = new Http(); 
             HttpResponse res = http.send(req);
+            
+            System.debug('Gemini API Status Code: ' + res.getStatusCode());
+            System.debug('Gemini API Response: ' + res.getBody());
+            
             if(res.getStatusCode()==200){
                 String parsed = parseGeminiHtml(res.getBody());
                 if(!String.isBlank(parsed)) html = cleanForUi(parsed);
+            } else {
+                System.debug('Gemini API Error: ' + res.getBody());
             }
         } catch(Exception e){
             System.debug('AI Notes error: ' + e.getMessage());
+            System.debug('Stack trace: ' + e.getStackTraceString());
         }
 
         if(!String.isBlank(html)) return html;
@@ -86,12 +96,11 @@ public with sharing class DV_AINotesUtil {
         return buildFallbackHtmlFromElementSummary(elementChangesSummary);
     }
 
-    // CRITICAL: Build concise fallback summaries from ElementChangesSummary
+    // CRITICAL: Build concise fallback summaries from ElementChangesSummary - ONLY added/removed
     private static String buildFallbackHtmlFromElementSummary(String elementSummary) {
         List<String> lines = splitLines(elementSummary);
         List<String> added = new List<String>();
         List<String> removed = new List<String>();
-        List<String> modified = new List<String>();
         
         for (String line : lines) {
             if (line.startsWith('+ ')) {
@@ -102,19 +111,16 @@ public with sharing class DV_AINotesUtil {
                 String content = line.substring(2).trim();
                 if (content.length() > 80) content = content.substring(0, 77) + '...';
                 removed.add(content);
-            } else if (line.startsWith('~ ')) {
-                String content = line.substring(2).trim();
-                if (content.length() > 80) content = content.substring(0, 77) + '...';
-                modified.add(content);
             }
+            // SKIP modified elements - only care about additions/deletions
         }
         
-        // Build Key Changes card
+        // Build Key Changes card - ONLY show added/removed
         String keyChangesHtml = '<div class="highlight-card"><div class="card-title">🎯 Key Changes</div><ul>';
         
-        Integer totalChanges = added.size() + removed.size() + modified.size();
+        Integer totalChanges = added.size() + removed.size();
         if (totalChanges == 0) {
-            keyChangesHtml += '<li>No element-level changes detected</li>';
+            keyChangesHtml += '<li>No element additions or deletions detected</li>';
         } else {
             Integer itemsShown = 0;
             
@@ -130,12 +136,6 @@ public with sharing class DV_AINotesUtil {
                 itemsShown++;
             }
             
-            for (String item : modified) {
-                if (itemsShown >= 3) break;
-                keyChangesHtml += '<li>Modified: ' + escapeHtml(item) + '</li>';
-                itemsShown++;
-            }
-            
             if (totalChanges > 3) {
                 keyChangesHtml += '<li>' + (totalChanges - 3) + ' more changes</li>';
             }
@@ -146,8 +146,6 @@ public with sharing class DV_AINotesUtil {
         String risksHtml = '<div class="highlight-card warning"><div class="card-title">⚠️ Risks</div><ul>';
         if (removed.size() > 0) {
             risksHtml += '<li>Removed elements may break dependent flows</li>';
-        } else if (modified.size() > 0) {
-            risksHtml += '<li>Configuration changes need validation testing</li>';
         } else if (added.size() > 0) {
             risksHtml += '<li>New elements need integration testing</li>';
         } else {
@@ -161,8 +159,6 @@ public with sharing class DV_AINotesUtil {
             testHtml += '<li>Verify new elements function as expected</li>';
         } else if (removed.size() > 0) {
             testHtml += '<li>Check dependent components still work</li>';
-        } else if (modified.size() > 0) {
-            testHtml += '<li>Test modified element configurations</li>';
         } else {
             testHtml += '<li>Run full regression test suite</li>';
         }
@@ -194,7 +190,10 @@ public with sharing class DV_AINotesUtil {
             Map<String,Object> firstPart = (Map<String,Object>) parts[0];
             Object text = firstPart.get('text');
             return (text==null)? null : String.valueOf(text);
-        } catch(Exception e){ return null; }
+        } catch(Exception e){ 
+            System.debug('Error parsing Gemini response: ' + e.getMessage());
+            return null; 
+        }
     }
     
     public static String cleanForUi(String html){
@@ -212,9 +211,37 @@ public with sharing class DV_AINotesUtil {
         return new List<String>(norm.split('\n', -1));
     }
     
-    // CRITICAL: No more deepDiff - we compare elements directly
+    // DEPRECATED - no longer used
     public static String deepDiff(String oldJson, String newJson) {
-        // Deprecated - not used anymore
         return '';
+    }
+    
+    // UTILITY: Create unified diff for text comparison (kept for reference)
+    public static String unifiedDiff(String oldText, String newText) {
+        if (String.isBlank(oldText)) oldText = '';
+        if (String.isBlank(newText)) newText = '';
+        
+        List<String> oldLines = splitLines(oldText);
+        List<String> newLines = splitLines(newText);
+        
+        List<String> result = new List<String>();
+        result.add('--- OLD');
+        result.add('+++ NEW');
+        
+        Integer i = 0, j = 0;
+        while (i < oldLines.size() || j < newLines.size()) {
+            if (i < oldLines.size() && j < newLines.size() && oldLines[i] == newLines[j]) {
+                result.add(' ' + oldLines[i]);
+                i++; j++;
+            } else if (i < oldLines.size() && (j >= newLines.size() || oldLines[i] != newLines[j])) {
+                result.add('- ' + oldLines[i]);
+                i++;
+            } else if (j < newLines.size()) {
+                result.add('+ ' + newLines[j]);
+                j++;
+            }
+        }
+        
+        return String.join(result, '\n');
     }
 }

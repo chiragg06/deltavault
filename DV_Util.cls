@@ -234,4 +234,49 @@ public with sharing class DV_Util {
         for (String f : wanted) if (fmap.containsKey(f) && order.indexOf(f) < 0) order.add(f);
         return String.join(order, ',');
     }
+    
+    // ============================================================================
+    // NEW METHOD: Extract clean elements array from afterM for storage
+    // ============================================================================
+    public static String buildElementsArrayJson(Map<String,Object> afterM) {
+        if (afterM == null) return null;
+        
+        // For child components (OmniProcessElement, DataMapperItem)
+        if (afterM.containsKey('childPayloads')) {
+            List<Object> childPayloads = (List<Object>) afterM.get('childPayloads');
+            if (childPayloads != null && !childPayloads.isEmpty()) {
+                try {
+                    // Store only the essential fields we need for comparison
+                    List<Map<String,Object>> cleanElements = new List<Map<String,Object>>();
+                    
+                    for (Object cpObj : childPayloads) {
+                        if (cpObj instanceof Map<String,Object>) {
+                            Map<String,Object> cp = (Map<String,Object>) cpObj;
+                            Map<String,Object> cleanElem = new Map<String,Object>();
+                            
+                            // Core fields
+                            if (cp.containsKey('Name')) cleanElem.put('Name', cp.get('Name'));
+                            if (cp.containsKey('Type')) cleanElem.put('Type', cp.get('Type'));
+                            if (cp.containsKey('Level')) cleanElem.put('Level', cp.get('Level'));
+                            if (cp.containsKey('ParentElementName')) cleanElem.put('ParentElementName', cp.get('ParentElementName'));
+                            
+                            // DataRaptor specific
+                            if (cp.containsKey('InputFieldName')) cleanElem.put('InputFieldName', cp.get('InputFieldName'));
+                            if (cp.containsKey('OutputFieldName')) cleanElem.put('OutputFieldName', cp.get('OutputFieldName'));
+                            if (cp.containsKey('FormulaExpression')) cleanElem.put('FormulaExpression', cp.get('FormulaExpression'));
+                            
+                            cleanElements.add(cleanElem);
+                        }
+                    }
+                    
+                    return JSON.serialize(cleanElements);
+                } catch (Exception e) {
+                    System.debug('Error building elements array: ' + e.getMessage());
+                    return null;
+                }
+            }
+        }
+        
+        return null;
+    }
 }

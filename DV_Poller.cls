@@ -563,6 +563,9 @@ public with sharing class DV_Poller implements Schedulable {
         return txt.substring(0, max) + '\n\n... [TRUNCATED - ' + txt.length() + ' chars total]';
     }
     
+    // ============================================================================
+    // CRITICAL FIX: Updated upsertAndSnapshot with ElementChangeSummary support
+    // ============================================================================
     private static void upsertAndSnapshot(
         Map<String, OmniComponent__c> comps,
         Map<String, Map<String,Object>> afterJsonByFull,
@@ -642,13 +645,24 @@ public with sharing class DV_Poller implements Schedulable {
             String diffKey = nameToId.get(fn) + '|' + versionKey;
             String prev = prevRawByKey.get(diffKey);
             
-            String diff = DV_AINotesUtil.deepDiff(
-                String.isBlank(prev) ? '{}' : prev,
-                prettyAfter
-            );
-            
+            // CRITICAL FIX: Check if changes exist using ElementChangeSummary instead of deprecated deepDiff
             Boolean isBaseline = (actor == 'Baseline' || actor == 'Manual Baseline');
-            if (!isBaseline && String.isBlank(diff)) continue;
+            Boolean hasChanges = false;
+            
+            if (changesByFull != null && changesByFull.containsKey(fn)) {
+                ElementChangeSummary summary = changesByFull.get(fn);
+                hasChanges = (!summary.added.isEmpty() || 
+                             !summary.removed.isEmpty() || 
+                             !summary.modified.isEmpty());
+            }
+            
+            // Skip if not baseline AND no changes detected
+            if (!isBaseline && !hasChanges && !String.isBlank(prev)) {
+                System.debug('Skipping snapshot for ' + fn + ' - no element changes detected');
+                continue;
+            }
+            
+            System.debug('Creating snapshot for ' + fn + ' - hasChanges=' + hasChanges + ', isBaseline=' + isBaseline);
             
             OmniSnapshot__c snap = new OmniSnapshot__c();
             snap.OmniComponent__c = nameToId.get(fn);
@@ -656,7 +670,7 @@ public with sharing class DV_Poller implements Schedulable {
             snap.ActorName__c = actor;
             snap.ChangeType__c = String.isBlank(prev) ? 'Insert' : 'Update';
             snap.RawJSON__c = truncate(compactJson, MAX_JSON_LENGTH);
-            snap.DiffToPrev__c = String.isBlank(diff) ? 'Initial baseline snapshot' : truncate(diff, MAX_DIFF_LENGTH);
+            snap.DiffToPrev__c = String.isBlank(prev) ? 'Initial baseline snapshot' : 'See Element Changes tab';
             snap.BaseName__c = base;
             
             if (v != null) {
@@ -664,9 +678,13 @@ public with sharing class DV_Poller implements Schedulable {
                 snap.VersionKey__c = base + '_v' + String.valueOf(v);
             }
             
+            // CRITICAL: Store element changes summary
             if (changesByFull != null && changesByFull.containsKey(fn)) {
                 ElementChangeSummary changeSummary = changesByFull.get(fn);
                 snap.ElementChangesSummary__c = buildElementSummaryText(childTag, childNameBy != null ? childNameBy.get(fn) : null, changeSummary);
+                
+                // CRITICAL: Store clean elements array for diff comparison
+                snap.ElementsArray__c = DV_Util.buildElementsArrayJson(afterM);
             }
             
             if (childTag != null) {
@@ -677,6 +695,8 @@ public with sharing class DV_Poller implements Schedulable {
             
             toInsert.add(snap);
         }
+        
+        System.debug('Inserting ' + toInsert.size() + ' snapshots');
         
         if (!toInsert.isEmpty()) {
             insert toInsert;
@@ -879,7 +899,7 @@ public with sharing class DV_Poller implements Schedulable {
         
         if (!afterBy.isEmpty()) {
             upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
-            System.debug('[DEBUG] ✅ FlexCard ingest complete');
+            System.debug('[DEBUG] ✅ Family ingest complete');
         } else {
             System.debug('[DEBUG] No components found to ingest');
         }

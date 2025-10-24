@@ -1816,3 +1816,94 @@
   color: var(--red);
   font-weight: 600;
 }
+/* Enhanced comparison table with VIVID green/red highlighting */
+
+.comparison-cell.added-cell {
+  background: rgba(16, 185, 129, 0.15) !important; /* Brighter green */
+  border-left: 6px solid #10b981 !important; /* Thicker border */
+  color: #d1fae5 !important;
+  font-weight: 600 !important;
+  box-shadow: inset 0 0 20px rgba(16, 185, 129, 0.2) !important; /* Glow effect */
+}
+
+.comparison-cell.removed-cell {
+  background: rgba(239, 68, 68, 0.15) !important; /* Brighter red */
+  border-left: 6px solid #ef4444 !important; /* Thicker border */
+  color: #fecaca !important;
+  font-weight: 600 !important;
+  box-shadow: inset 0 0 20px rgba(239, 68, 68, 0.2) !important; /* Glow effect */
+}
+
+.comparison-cell.modified-cell {
+  background: rgba(245, 158, 11, 0.15) !important; /* Brighter yellow */
+  border-left: 6px solid #f59e0b !important; /* Thicker border */
+  color: #fef3c7 !important;
+  font-weight: 600 !important;
+  box-shadow: inset 0 0 20px rgba(245, 158, 11, 0.2) !important; /* Glow effect */
+}
+
+/* Make the +/- symbols more prominent */
+.comparison-cell.added-cell::before {
+  content: '✅ ';
+  font-size: 1.2rem;
+  margin-right: 8px;
+  filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.8));
+}
+
+.comparison-cell.removed-cell::before {
+  content: '❌ ';
+  font-size: 1.2rem;
+  margin-right: 8px;
+  filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.8));
+}
+
+.comparison-cell.modified-cell::before {
+  content: '⚠️ ';
+  font-size: 1.2rem;
+  margin-right: 8px;
+  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.8));
+}
+
+/* Enhance hover effects */
+.comparison-row:hover .comparison-cell.added-cell {
+  background: rgba(16, 185, 129, 0.25) !important;
+  transform: translateX(4px);
+  transition: all 0.2s ease;
+}
+
+.comparison-row:hover .comparison-cell.removed-cell {
+  background: rgba(239, 68, 68, 0.25) !important;
+  transform: translateX(4px);
+  transition: all 0.2s ease;
+}
+
+.comparison-row:hover .comparison-cell.modified-cell {
+  background: rgba(245, 158, 11, 0.25) !important;
+  transform: translateX(4px);
+  transition: all 0.2s ease;
+}
+
+/* Make empty cells more subtle */
+.comparison-cell.empty-cell {
+  background: rgba(255, 255, 255, 0.02) !important;
+  color: var(--muted) !important;
+  font-style: italic;
+  text-align: center;
+  opacity: 0.6;
+}
+
+/* Special styling for deleted indication in current column */
+.comparison-cell.curr-cell.empty-cell.removed-cell {
+  background: rgba(239, 68, 68, 0.1) !important;
+  color: #ef4444 !important;
+  font-weight: 700 !important;
+  border-left: 6px solid #ef4444 !important;
+}
+
+.comparison-cell.curr-cell.empty-cell.removed-cell::before {
+  content: '🗑️ ';
+  font-size: 1.5rem;
+  margin-right: 8px;
+}
+
+/* Add to your existing deltavaultApp.css file */

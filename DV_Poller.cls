@@ -44,17 +44,13 @@ public with sharing class DV_Poller implements Schedulable {
             String full = DV_Util.deriveFullName(r, t);
             String base = DV_Util.stripVersion(full);
             
-            // CRITICAL: For FlexCards ONLY - Extract changes from PropertySetConfig via AI
+            // CRITICAL FIX: For FlexCards - detect PropertySetConfig changes
             if (t == DV_Constants.CompType.Flexcard) {
-                Id componentId = getComponentIdForParent(r.Id, full);
-                if (componentId != null) {
-                    ElementChangeSummary fcChanges = analyzeFlexCardChanges(componentId, m);
-                    if (fcChanges != null) {
-                        changesByFull.put(full, fcChanges);
-                    }
+                ElementChangeSummary fcChanges = analyzeFlexCardChanges(full, m);
+                if (fcChanges != null) {
+                    changesByFull.put(full, fcChanges);
                 }
             }
-            // DO NOT analyze PropertySetConfig for OmniProcess or DataMapper - they use element tracking
             
             afterBy.put(full, m);
             
@@ -74,29 +70,43 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', null, null, changesByFull);
     }
     
-    // CRITICAL: Analyze FlexCard PropertySetConfig changes using text comparison
-    private static ElementChangeSummary analyzeFlexCardChanges(Id componentId, Map<String,Object> currentData) {
+    // CRITICAL FIX: Analyze FlexCard PropertySetConfig changes
+    private static ElementChangeSummary analyzeFlexCardChanges(String fullName, Map<String,Object> currentData) {
         try {
             // Get previous snapshot's PropertySetConfig
+            List<OmniComponent__c> compList = [
+                SELECT Id FROM OmniComponent__c 
+                WHERE FullName__c = :fullName 
+                LIMIT 1
+            ];
+            
+            if (compList.isEmpty()) {
+                return null; // First snapshot - no previous to compare
+            }
+            
+            Id componentId = compList[0].Id;
+            
             List<OmniSnapshot__c> snaps = [
                 SELECT RawJSON__c 
                 FROM OmniSnapshot__c 
                 WHERE OmniComponent__c = :componentId 
                 ORDER BY ModifiedAt__c DESC 
-                LIMIT 2
+                LIMIT 1
             ];
             
-            if (snaps.size() < 2 || String.isBlank(snaps[1].RawJSON__c)) {
-                return null; // No previous snapshot to compare
+            if (snaps.isEmpty() || String.isBlank(snaps[0].RawJSON__c)) {
+                return null; // No previous snapshot
             }
             
-            String prevRaw = DV_Util.cleanStringForJson(snaps[1].RawJSON__c);
+            String prevRaw = DV_Util.cleanStringForJson(snaps[0].RawJSON__c);
             Map<String,Object> prevData = (Map<String,Object>) JSON.deserializeUntyped(prevRaw);
             
-            String prevPSC = prevData.containsKey('PropertySetConfig') ? String.valueOf(prevData.get('PropertySetConfig')) : '';
-            String currPSC = currentData.containsKey('PropertySetConfig') ? String.valueOf(currentData.get('PropertySetConfig')) : '';
+            String prevPSC = prevData.containsKey('PropertySetConfig') ? 
+                            String.valueOf(prevData.get('PropertySetConfig')) : '';
+            String currPSC = currentData.containsKey('PropertySetConfig') ? 
+                            String.valueOf(currentData.get('PropertySetConfig')) : '';
             
-            // If PropertySetConfig changed, note it
+            // CRITICAL: Compare as text, not JSON
             if (prevPSC != currPSC) {
                 ElementChangeSummary summary = new ElementChangeSummary();
                 summary.added = new List<ElementChange>();
@@ -107,14 +117,16 @@ public with sharing class DV_Poller implements Schedulable {
                 ec.elementName = 'PropertySetConfig';
                 ec.elementType = 'FlexCard Configuration';
                 ec.parentElementName = 'Root';
-                ec.details = 'UI Configuration modified (' + 
-                            Math.abs(currPSC.length() - prevPSC.length()) + ' chars changed)';
+                
+                Integer charDiff = Math.abs(currPSC.length() - prevPSC.length());
+                ec.details = 'UI Configuration modified (' + charDiff + ' chars changed)';
+                
                 summary.modified.add(ec);
                 
                 return summary;
             }
             
-            return null;
+            return null; // No changes
         } catch (Exception e) {
             System.debug('Error analyzing FlexCard changes: ' + e.getMessage());
             return null;
@@ -152,13 +164,9 @@ public with sharing class DV_Poller implements Schedulable {
             allChildrenByParent.get(pid).add(c);
         }
         
-        // CRITICAL: Get previous state BEFORE we create new snapshots
+        // CRITICAL: Get previous state
         Map<Id, Map<String, Map<String,Object>>> prevChildMapByParent = getPreviousChildState(pids, childApi, parentLookup);
         Map<Id, Map<String,Object>> prevParentDataByParent = getPreviousParentData(pids);
-        
-        System.debug('=== CHILD COMPARISON DEBUG ===');
-        System.debug('Parent IDs being processed: ' + pids.size());
-        System.debug('Previous state found for: ' + prevChildMapByParent.size() + ' parents');
         
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, String> childNameBy = new Map<String, String>();
@@ -190,7 +198,6 @@ public with sharing class DV_Poller implements Schedulable {
                 }
             }
             
-            // Get component ID to look up previous state
             Id componentId = getComponentIdForParent(pid, full);
             Map<String, Map<String,Object>> prevChildMap = prevChildMapByParent.get(componentId);
             if (prevChildMap == null) prevChildMap = new Map<String, Map<String,Object>>();
@@ -198,20 +205,12 @@ public with sharing class DV_Poller implements Schedulable {
             Map<String,Object> prevParentData = prevParentDataByParent.get(componentId);
             if (prevParentData == null) prevParentData = new Map<String,Object>();
             
-            System.debug('Component: ' + full);
-            System.debug('  Current children: ' + currentChildMap.keySet());
-            System.debug('  Previous children: ' + prevChildMap.keySet());
-            
-            // CRITICAL: Compare both child elements AND parent-level changes
+            // CRITICAL FIX: Compare with proper change detection
             ElementChangeSummary changeSummary = compareElementsAndParent(
                 prevChildMap, currentChildMap, 
                 prevParentData, parentAfter,
                 childTag, p
             );
-            
-            System.debug('  Changes detected: Added=' + changeSummary.added.size() + 
-                        ', Removed=' + changeSummary.removed.size() + 
-                        ', Modified=' + changeSummary.modified.size());
             
             changesByFull.put(full, changeSummary);
             
@@ -244,7 +243,6 @@ public with sharing class DV_Poller implements Schedulable {
         upsertAndSnapshot(comps, afterBy, nowTs, 'Poller', childTag, childNameBy, changesByFull);
     }
     
-    // Helper to get component ID from parent ID
     private static Id getComponentIdForParent(Id parentId, String fullName) {
         List<OmniComponent__c> comps = [
             SELECT Id 
@@ -260,8 +258,7 @@ public with sharing class DV_Poller implements Schedulable {
         Map<Id, Map<String, Map<String,Object>>> result = new Map<Id, Map<String, Map<String,Object>>>();
         
         List<OmniComponent__c> relevantComponents = [
-            SELECT Id, FullName__c, OmniType__c 
-            FROM OmniComponent__c 
+            SELECT Id FROM OmniComponent__c 
             WHERE Id IN (
                 SELECT OmniComponent__c 
                 FROM OmniSnapshot__c 
@@ -273,16 +270,14 @@ public with sharing class DV_Poller implements Schedulable {
         
         for (OmniComponent__c comp : relevantComponents) {
             List<OmniSnapshot__c> compSnaps = [
-                SELECT Id, RawJSON__c, OmniComponent__c, ModifiedAt__c
+                SELECT RawJSON__c 
                 FROM OmniSnapshot__c
                 WHERE OmniComponent__c = :comp.Id
-                ORDER BY ModifiedAt__c DESC, Id DESC
-                LIMIT 2
+                ORDER BY ModifiedAt__c DESC
+                LIMIT 1
             ];
             
-            if (compSnaps.size() > 1) {
-                prevByComponent.put(comp.Id, compSnaps[1]);
-            } else if (compSnaps.size() == 1) {
+            if (!compSnaps.isEmpty()) {
                 prevByComponent.put(comp.Id, compSnaps[0]);
             }
         }
@@ -322,7 +317,6 @@ public with sharing class DV_Poller implements Schedulable {
         return result;
     }
     
-    // NEW: Get previous parent-level data for comparison
     private static Map<Id, Map<String,Object>> getPreviousParentData(Set<Id> parentIds) {
         Map<Id, Map<String,Object>> result = new Map<Id, Map<String,Object>>();
         
@@ -337,12 +331,12 @@ public with sharing class DV_Poller implements Schedulable {
                 FROM OmniSnapshot__c
                 WHERE OmniComponent__c = :comp.Id
                 ORDER BY ModifiedAt__c DESC
-                LIMIT 2
+                LIMIT 1
             ];
             
-            if (compSnaps.size() > 1 && !String.isBlank(compSnaps[1].RawJSON__c)) {
+            if (!compSnaps.isEmpty() && !String.isBlank(compSnaps[0].RawJSON__c)) {
                 try {
-                    String cleanedJson = DV_Util.cleanStringForJson(compSnaps[1].RawJSON__c);
+                    String cleanedJson = DV_Util.cleanStringForJson(compSnaps[0].RawJSON__c);
                     Map<String,Object> snapData = (Map<String,Object>) JSON.deserializeUntyped(cleanedJson);
                     result.put(comp.Id, snapData);
                 } catch (Exception e) {
@@ -354,7 +348,7 @@ public with sharing class DV_Poller implements Schedulable {
         return result;
     }
     
-    // CRITICAL: Compare child elements AND parent-level fields (but NOT PropertySetConfig for OmniProcess/DataRaptor)
+    // CRITICAL FIX: Proper comparison - only detect REAL changes
     private static ElementChangeSummary compareElementsAndParent(
         Map<String, Map<String,Object>> prevChildMap, 
         Map<String, Map<String,Object>> currChildMap,
@@ -370,9 +364,9 @@ public with sharing class DV_Poller implements Schedulable {
         
         String parentElementName = parent.get('Name') != null ? String.valueOf(parent.get('Name')) : 'Root';
         
-        // === PART 1: Compare child elements ===
+        // === PART 1: Compare child elements - ONLY additions and deletions ===
         
-        // Find added child elements
+        // Find ADDED elements
         for (String childName : currChildMap.keySet()) {
             if (!prevChildMap.containsKey(childName)) {
                 Map<String,Object> childData = currChildMap.get(childName);
@@ -385,7 +379,7 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        // Find removed child elements
+        // Find REMOVED elements
         for (String childName : prevChildMap.keySet()) {
             if (!currChildMap.containsKey(childName)) {
                 Map<String,Object> childData = prevChildMap.get(childName);
@@ -398,69 +392,24 @@ public with sharing class DV_Poller implements Schedulable {
             }
         }
         
-        Set<String> skipFields = new Set<String>{
-            'SequenceNumber', 'Level', 'ParentElementName', 'IsActive', 'SystemModstamp',
-            'LastModifiedDate', 'LastReferencedDate', 'LastViewedDate', 'CreatedDate', 
-            'CreatedById', 'LastModifiedById', 'MayEdit', 'IsDeleted', 'IsLocked'
-        };
-        
-        // Find modified child elements
-        for (String childName : currChildMap.keySet()) {
-            if (prevChildMap.containsKey(childName)) {
-                Map<String,Object> prevData = prevChildMap.get(childName);
-                Map<String,Object> currData = currChildMap.get(childName);
-                
-                List<String> changes = new List<String>();
-                
-                for (String key : currData.keySet()) {
-                    if (skipFields.contains(key)) continue;
-                    
-                    Object prevVal = prevData.get(key);
-                    Object currVal = currData.get(key);
-                    
-                    if (prevVal == null && currVal == null) continue;
-                    if (String.valueOf(prevVal) == String.valueOf(currVal)) continue;
-                    
-                    changes.add(key + ': ' + truncateValue(prevVal) + ' → ' + truncateValue(currVal));
-                }
-                
-                if (!changes.isEmpty()) {
-                    ElementChange ec = new ElementChange();
-                    ec.elementName = childName;
-                    ec.elementType = currData.containsKey('Type') ? String.valueOf(currData.get('Type')) : childTag;
-                    ec.parentElementName = getParentElementName(currData, parentElementName);
-                    ec.details = String.join(changes, '; ');
-                    summary.modified.add(ec);
-                }
-            }
-        }
-        
-        // === PART 2: Compare parent-level fields (EXCLUDING PropertySetConfig for OmniProcess/DataRaptor) ===
+        // === PART 2: Compare parent-level fields (EXCLUDING PropertySetConfig) ===
         
         String componentType = String.valueOf(parent.getSObjectType().getDescribe().getName());
         
         if (componentType == 'OmniProcess') {
-            // Check OmniScript/IP parent fields - NO PropertySetConfig
             checkParentField(prevParentData, currParentData, 'CustomJavaScript', 'Custom JavaScript', summary);
-            checkParentField(prevParentData, currParentData, 'CustomHtmlTemplates', 'Custom HTML Templates', summary);
-            checkParentField(prevParentData, currParentData, 'IntegrationProcedureInput', 'IP Input Structure', summary);
-            checkParentField(prevParentData, currParentData, 'IntegrationProcedureOutput', 'IP Output Structure', summary);
             checkParentField(prevParentData, currParentData, 'Language', 'Language', summary);
             checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
         } else if (componentType == 'OmniDataTransform') {
-            // Check DataRaptor parent fields - NO PropertySetConfig
             checkParentField(prevParentData, currParentData, 'Type', 'DataRaptor Type', summary);
             checkParentField(prevParentData, currParentData, 'InputType', 'Input Type', summary);
             checkParentField(prevParentData, currParentData, 'OutputType', 'Output Type', summary);
-            checkParentField(prevParentData, currParentData, 'SourceObject', 'Source Object', summary);
             checkParentBooleanField(prevParentData, currParentData, 'IsActive', 'Active Status', summary);
         }
-        // For OmniUiCard (FlexCard), PropertySetConfig is handled separately in analyzeFlexCardChanges()
         
         return summary;
     }
     
-    // Helper: Check if a parent field changed
     private static void checkParentField(
         Map<String,Object> prevData, 
         Map<String,Object> currData, 
@@ -490,7 +439,6 @@ public with sharing class DV_Poller implements Schedulable {
         summary.modified.add(ec);
     }
     
-    // Helper: Check if a boolean parent field changed
     private static void checkParentBooleanField(
         Map<String,Object> prevData, 
         Map<String,Object> currData, 
@@ -512,7 +460,6 @@ public with sharing class DV_Poller implements Schedulable {
         summary.modified.add(ec);
     }
     
-    // Helper: Truncate long values for display
     private static String truncateValue(Object val) {
         if (val == null) return 'null';
         String str = String.valueOf(val);
@@ -529,13 +476,11 @@ public with sharing class DV_Poller implements Schedulable {
         return defaultParent;
     }
     
-    // ENHANCED: Extract meaningful fields per element type
     private static String buildDetailedElementInfo(Map<String,Object> data) {
         List<String> details = new List<String>();
         
         String elemType = data.containsKey('Type') ? String.valueOf(data.get('Type')) : '';
         
-        // For OmniProcessElement
         if (data.containsKey('Type')) {
             details.add('Type: ' + elemType);
         }
@@ -543,17 +488,11 @@ public with sharing class DV_Poller implements Schedulable {
             details.add('Level: ' + data.get('Level'));
         }
         
-        // For DataRaptor Items
         if (data.containsKey('InputFieldName')) {
             details.add('Input: ' + data.get('InputFieldName'));
         }
         if (data.containsKey('OutputFieldName')) {
             details.add('Output: ' + data.get('OutputFieldName'));
-        }
-        if (data.containsKey('FormulaExpression') && data.get('FormulaExpression') != null) {
-            String formula = String.valueOf(data.get('FormulaExpression'));
-            if (formula.length() > 50) formula = formula.substring(0, 47) + '...';
-            details.add('Formula: ' + formula);
         }
         
         return String.join(details, ', ');
@@ -564,9 +503,7 @@ public with sharing class DV_Poller implements Schedulable {
         return txt.substring(0, max) + '\n\n... [TRUNCATED - ' + txt.length() + ' chars total]';
     }
     
-    // ============================================================================
-    // CRITICAL FIX: Updated upsertAndSnapshot with ElementChangeSummary support
-    // ============================================================================
+    // CRITICAL FIX: Only create snapshots when ACTUAL changes detected
     private static void upsertAndSnapshot(
         Map<String, OmniComponent__c> comps,
         Map<String, Map<String,Object>> afterJsonByFull,
@@ -604,22 +541,6 @@ public with sharing class DV_Poller implements Schedulable {
             nameToId.put(e.FullName__c, e.Id);
         }
         
-        Map<String,String> prevRawByKey = new Map<String,String>();
-        for (OmniSnapshot__c s : [
-            SELECT Id, OmniComponent__c, BaseName__c, RawJSON__c, Version__c, ModifiedAt__c
-            FROM OmniSnapshot__c
-            WHERE OmniComponent__c IN :nameToId.values()
-            ORDER BY OmniComponent__c ASC, BaseName__c ASC, Version__c DESC, ModifiedAt__c DESC, Id DESC
-        ]) {
-            String base = s.BaseName__c != null ? s.BaseName__c : '';
-            String ver = s.Version__c != null ? String.valueOf(s.Version__c) : '';
-            String k = s.OmniComponent__c + '|' + base + '|' + ver;
-            
-            if (!prevRawByKey.containsKey(k)) {
-                prevRawByKey.put(k, s.RawJSON__c);
-            }
-        }
-        
         List<OmniSnapshot__c> toInsert = new List<OmniSnapshot__c>();
         
         for (String fn : nameToId.keySet()) {
@@ -642,11 +563,7 @@ public with sharing class DV_Poller implements Schedulable {
                 prettyAfter = compactJson;
             }
             
-            String versionKey = base + '|' + (v != null ? String.valueOf(v) : '');
-            String diffKey = nameToId.get(fn) + '|' + versionKey;
-            String prev = prevRawByKey.get(diffKey);
-            
-            // CRITICAL FIX: Check if changes exist using ElementChangeSummary instead of deprecated deepDiff
+            // CRITICAL FIX: Check if ACTUAL changes exist
             Boolean isBaseline = (actor == 'Baseline' || actor == 'Manual Baseline');
             Boolean hasChanges = false;
             
@@ -657,8 +574,8 @@ public with sharing class DV_Poller implements Schedulable {
                              !summary.modified.isEmpty());
             }
             
-            // Skip if not baseline AND no changes detected
-            if (!isBaseline && !hasChanges && !String.isBlank(prev)) {
+            // CRITICAL: Skip if not baseline AND no actual changes
+            if (!isBaseline && !hasChanges) {
                 System.debug('Skipping snapshot for ' + fn + ' - no element changes detected');
                 continue;
             }
@@ -669,9 +586,9 @@ public with sharing class DV_Poller implements Schedulable {
             snap.OmniComponent__c = nameToId.get(fn);
             snap.ModifiedAt__c = nowTs;
             snap.ActorName__c = actor;
-            snap.ChangeType__c = String.isBlank(prev) ? 'Insert' : 'Update';
+            snap.ChangeType__c = isBaseline ? 'Insert' : 'Update';
             snap.RawJSON__c = truncate(compactJson, MAX_JSON_LENGTH);
-            snap.DiffToPrev__c = String.isBlank(prev) ? 'Initial baseline snapshot' : 'See Element Changes tab';
+            snap.DiffToPrev__c = isBaseline ? 'Initial baseline snapshot' : 'See Element Changes tab';
             snap.BaseName__c = base;
             
             if (v != null) {
@@ -679,12 +596,10 @@ public with sharing class DV_Poller implements Schedulable {
                 snap.VersionKey__c = base + '_v' + String.valueOf(v);
             }
             
-            // CRITICAL: Store element changes summary
+            // Store element changes summary
             if (changesByFull != null && changesByFull.containsKey(fn)) {
                 ElementChangeSummary changeSummary = changesByFull.get(fn);
                 snap.ElementChangesSummary__c = buildElementSummaryText(childTag, childNameBy != null ? childNameBy.get(fn) : null, changeSummary);
-                
-                // CRITICAL: Store clean elements array for diff comparison
                 snap.ElementsArray__c = DV_Util.buildElementsArrayJson(afterM);
             }
             
@@ -753,27 +668,19 @@ public with sharing class DV_Poller implements Schedulable {
         return String.join(parts, '\n');
     }
     
-    // FIXED: Helper to map family name to API object name (case-insensitive)
     private static String getApiNameForFamily(String family) {
         if (String.isBlank(family)) return null;
         
         family = family.toLowerCase();
         
-        // FlexCard variations
         if (family == 'flexcard' || family == 'card' || family == 'omniuicard') {
             return 'OmniUiCard';
-        }
-        // OmniScript variations
-        else if (family == 'omniscript' || family == 'script' || family == 'omniprocess') {
+        } else if (family == 'omniscript' || family == 'script' || family == 'omniprocess') {
             return 'OmniProcess';
-        }
-        // DataRaptor variations (FIXED: accept both DataMapper and DataRaptor)
-        else if (family == 'datarapter' || family == 'dataraptor' || family == 'dr' || 
-                 family == 'datamapper' || family == 'omnidatatransform') {
+        } else if (family == 'dataraptor' || family == 'dr' || 
+                   family == 'datamapper' || family == 'omnidatatransform') {
             return 'OmniDataTransform';
-        }
-        // Integration Procedure (stored as OmniProcess with SubType)
-        else if (family == 'integrationprocedure' || family == 'ip') {
+        } else if (family == 'integrationprocedure' || family == 'ip') {
             return 'OmniProcess';
         }
         
@@ -782,34 +689,23 @@ public with sharing class DV_Poller implements Schedulable {
     
     @AuraEnabled
     public static void ingestBaseAllVersions(String family, String baseName) {
-        System.debug('[DEBUG] ingestBaseAllVersions called with family=' + family + ', baseName=' + baseName);
-        
         String apiName = getApiNameForFamily(family);
         if (String.isBlank(apiName)) {
-            System.debug('[DEBUG] ❌ Invalid family: ' + family);
-            throw new AuraHandledException('Invalid family: ' + family + '. Valid options: OmniProcess, Flexcard, DataMapper');
+            throw new AuraHandledException('Invalid family: ' + family);
         }
-        
-        System.debug('[DEBUG] ✅ Mapped family to API: ' + apiName);
         
         Datetime nowTs = System.now();
         String actor = 'Baseline';
         
         String soql = 'SELECT ' + DV_Util.fieldListFor(apiName) + ' FROM ' + apiName + ' LIMIT 50000';
-        System.debug('[DEBUG] Executing SOQL: ' + soql);
-        
         List<SObject> recs = Database.query(soql);
-        System.debug('[DEBUG] Query returned ' + recs.size() + ' total records');
         
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
         
-        Integer matchCount = 0;
         for (SObject r : recs) {
             DV_Constants.CompType t = DV_Util.mapType(r);
-            if (t == DV_Constants.CompType.Unknown || 
-                t == DV_Constants.CompType.OmniProcessElement || 
-                t == DV_Constants.CompType.DataMapperItem) continue;
+            if (t == DV_Constants.CompType.Unknown) continue;
             
             Map<String,Object> m = DV_Util.projectInteresting(r);
             String full = DV_Util.deriveFullName(r, t);
@@ -817,9 +713,6 @@ public with sharing class DV_Poller implements Schedulable {
             
             if (base != baseName) continue;
             
-            matchCount++;
-            System.debug('[DEBUG] Match #' + matchCount + ': ' + full);
-            
             afterBy.put(full, m);
             
             OmniComponent__c oc = new OmniComponent__c();
@@ -835,47 +728,32 @@ public with sharing class DV_Poller implements Schedulable {
             comps.put(full, oc);
         }
         
-        System.debug('[DEBUG] Total matches for baseName "' + baseName + '": ' + matchCount);
-        
         if (afterBy.isEmpty()) {
-            System.debug('[DEBUG] ❌ No versions found');
-            throw new AuraHandledException('No versions found for ' + baseName + ' in ' + family + '.');
+            throw new AuraHandledException('No versions found for ' + baseName);
         }
         
-        System.debug('[DEBUG] ✅ Ingesting ' + afterBy.size() + ' versions');
         upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
-        System.debug('[DEBUG] ✅ Ingest complete');
     }
     
     @AuraEnabled
     public static void ingestAllByFamily(String family) {
-        System.debug('[DEBUG] ingestAllByFamily called with family=' + family);
-        
         String apiName = getApiNameForFamily(family);
         if (String.isBlank(apiName)) {
-            System.debug('[DEBUG] ❌ Invalid family: ' + family);
-            throw new AuraHandledException('Invalid family: ' + family + '. Valid options: OmniProcess, Flexcard, DataMapper, DataRaptor');
+            throw new AuraHandledException('Invalid family: ' + family);
         }
-        
-        System.debug('[DEBUG] ✅ Mapped family to API: ' + apiName);
         
         Datetime nowTs = System.now();
         String actor = 'Manual Baseline';
         
         String soql = 'SELECT ' + DV_Util.fieldListFor(apiName) + ' FROM ' + apiName + ' LIMIT 50000';
-        System.debug('[DEBUG] Executing SOQL: ' + soql);
-        
         List<SObject> recs = Database.query(soql);
-        System.debug('[DEBUG] Query returned ' + recs.size() + ' records');
         
         Map<String, Map<String,Object>> afterBy = new Map<String, Map<String,Object>>();
         Map<String, OmniComponent__c> comps = new Map<String, OmniComponent__c>();
         
         for (SObject r : recs) {
             DV_Constants.CompType t = DV_Util.mapType(r);
-            if (t == DV_Constants.CompType.Unknown || 
-                t == DV_Constants.CompType.OmniProcessElement || 
-                t == DV_Constants.CompType.DataMapperItem) continue;
+            if (t == DV_Constants.CompType.Unknown) continue;
             
             Map<String,Object> m = DV_Util.projectInteresting(r);
             String full = DV_Util.deriveFullName(r, t);
@@ -896,13 +774,8 @@ public with sharing class DV_Poller implements Schedulable {
             comps.put(full, oc);
         }
         
-        System.debug('[DEBUG] Ingesting ' + afterBy.size() + ' components from family ' + family);
-        
         if (!afterBy.isEmpty()) {
             upsertAndSnapshot(comps, afterBy, nowTs, actor, null, null, null);
-            System.debug('[DEBUG] ✅ Family ingest complete');
-        } else {
-            System.debug('[DEBUG] No components found to ingest');
         }
     }
     

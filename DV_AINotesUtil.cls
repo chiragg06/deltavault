@@ -1,103 +1,264 @@
 public with sharing class DV_AINotesUtil {
 
-    // CRITICAL: Direct API key - REPLACE THIS WITH YOUR ACTUAL GEMINI API KEY
+    // REPLACE WITH YOUR ACTUAL GEMINI API KEY
     private static final String GEMINI_API_KEY = 'AIzaSyB2AWIUftI0djCtlGC31xB_P3ACgSN8wO4';
     private static final String GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent';
 
-    // CRITICAL: Element-focused AI Notes generation - ONLY shows added/removed, not all elements
+    // CRITICAL: Different handling for FlexCard vs OmniScript/DataRaptor
     public static String aiNotes(String componentName, String diff, String rawJson, String elementChangesSummary) {
-        // CRITICAL: If no element changes, use fallback immediately
+        // Check if this is a FlexCard (PropertySetConfig modification)
+        Boolean isFlexCard = (elementChangesSummary != null && 
+                              elementChangesSummary.contains('PropertySetConfig'));
+        
+        if (isFlexCard) {
+            return generateFlexCardNotes(componentName, elementChangesSummary);
+        } else {
+            return generateElementNotes(componentName, elementChangesSummary);
+        }
+    }
+
+    // ==================== FLEXCARD NOTES ====================
+    private static String generateFlexCardNotes(String componentName, String elementChangesSummary) {
+        // If no changes
         if (String.isBlank(elementChangesSummary) || elementChangesSummary.contains('NO CHANGES')) {
-            return '<div class="highlight-card">' +
-                   '<div class="card-title">🎯 Key Changes</div>' +
-                   '<ul><li>No element-level changes detected</li></ul>' +
-                   '</div>' +
-                   '<div class="highlight-card warning">' +
-                   '<div class="card-title">⚠️ Risks</div>' +
-                   '<ul><li>Review configuration changes in other tabs</li></ul>' +
-                   '</div>' +
-                   '<div class="highlight-card success">' +
-                   '<div class="card-title">✅ Test This</div>' +
-                   '<ul><li>Verify component functionality is unchanged</li></ul>' +
-                   '</div>';
+            return buildNoChangesHtml();
         }
         
-        // Build context from element changes summary - ONLY added/removed sections
-        String elementContext = '\n\n=== ELEMENT CHANGES (Primary Focus) ===\n' + elementChangesSummary;
+        // Extract character count if available
+        String charInfo = '';
+        if (elementChangesSummary.contains('chars changed')) {
+            Integer startIdx = elementChangesSummary.indexOf('(');
+            Integer endIdx = elementChangesSummary.indexOf('chars changed');
+            if (startIdx > -1 && endIdx > -1) {
+                charInfo = elementChangesSummary.substring(startIdx + 1, endIdx).trim();
+            }
+        }
         
         String prompt =
-            'You are a senior Salesforce OmniStudio developer. Analyze ELEMENT CHANGES and provide THREE concise cards.\n\n' +
-            'CRITICAL FORMAT:\n' +
-            '1. Return ONLY HTML using: <div>, <ul>, <li>, <strong>\n' +
-            '2. Create 3 cards with EXACT structure:\n\n' +
+            'You are analyzing a Salesforce FlexCard UI configuration change. The PropertySetConfig (which contains the card\'s layout, styling, and data mapping) has been modified.\n\n' +
+            
+            '=== YOUR TASK ===\n' +
+            'Create a concise 3-card summary explaining:\n' +
+            '1. What type of UI changes likely occurred\n' +
+            '2. Potential risks from configuration changes\n' +
+            '3. What to test\n\n' +
+            
+            '=== OUTPUT FORMAT ===\n' +
+            'Return ONLY this exact HTML structure:\n\n' +
+            
             '<div class="highlight-card">\n' +
             '  <div class="card-title">🎯 Key Changes</div>\n' +
             '  <ul>\n' +
-            '    <li>Brief one-liner about element change (max 12 words)</li>\n' +
-            '    <li>Another specific change</li>\n' +
+            '    <li>FlexCard UI configuration updated</li>\n' +
+            '    <li>Possible layout or styling modifications</li>\n' +
+            '    <li>Data mapping may have changed</li>\n' +
             '  </ul>\n' +
             '</div>\n' +
             '<div class="highlight-card warning">\n' +
             '  <div class="card-title">⚠️ Risks</div>\n' +
-            '  <ul><li>Specific risk (max 12 words)</li></ul>\n' +
+            '  <ul>\n' +
+            '    <li>Card display may break on certain pages</li>\n' +
+            '    <li>Data fields might not populate correctly</li>\n' +
+            '  </ul>\n' +
             '</div>\n' +
             '<div class="highlight-card success">\n' +
             '  <div class="card-title">✅ Test This</div>\n' +
-            '  <ul><li>Specific test scenario (max 12 words)</li></ul>\n' +
+            '  <ul>\n' +
+            '    <li>View card on all pages where embedded</li>\n' +
+            '    <li>Verify all data fields display correctly</li>\n' +
+            '  </ul>\n' +
             '</div>\n\n' +
-            'RULES:\n' +
-            '• Each bullet: MAX 12 words\n' +
-            '• Focus ONLY on ADDED/REMOVED elements from ELEMENT CHANGES section\n' +
-            '• IGNORE modified elements - only report additions and deletions\n' +
-            '• Be specific: "Added Email element to Step2" NOT "added field"\n' +
-            '• For ADDED: mention element name and parent\n' +
-            '• For REMOVED: mention what was deleted\n' +
-            '• NO generic statements - use actual element names\n' +
-            '• NO explanatory text outside cards\n\n' +
-            'Component: ' + componentName + elementContext;
+            
+            '=== RULES ===\n' +
+            '- Each bullet point MAX 10 words\n' +
+            '- Be specific but concise\n' +
+            '- Focus on UI/layout/data mapping changes\n' +
+            '- NO generic statements\n\n' +
+            
+            'Component: ' + componentName + '\n' +
+            'Change: PropertySetConfig modified' + 
+            (String.isBlank(charInfo) ? '' : ' (' + charInfo + ' characters changed)');
 
-        String html = null;
-        try{
-            HttpRequest req = new HttpRequest();
-            req.setMethod('POST'); 
-            req.setEndpoint(GEMINI_ENDPOINT + '?key=' + GEMINI_API_KEY); // Direct API key in URL
-            req.setHeader('Content-Type','application/json'); 
-            req.setTimeout(120000);
-            
-            Map<String,Object> payload = new Map<String,Object>{
-                'contents' => new List<Object>{
-                    new Map<String,Object>{
-                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
-                    }
-                }
-            };
-            
-            req.setBody(JSON.serialize(payload));
-            Http http = new Http(); 
-            HttpResponse res = http.send(req);
-            
-            System.debug('Gemini API Status Code: ' + res.getStatusCode());
-            System.debug('Gemini API Response: ' + res.getBody());
-            
-            if(res.getStatusCode()==200){
-                String parsed = parseGeminiHtml(res.getBody());
-                if(!String.isBlank(parsed)) html = cleanForUi(parsed);
-            } else {
-                System.debug('Gemini API Error: ' + res.getBody());
-            }
-        } catch(Exception e){
-            System.debug('AI Notes error: ' + e.getMessage());
-            System.debug('Stack trace: ' + e.getStackTraceString());
-        }
+        String html = callGemini(prompt);
+        
+        if (!String.isBlank(html)) return html;
 
-        if(!String.isBlank(html)) return html;
-
-        // FALLBACK: Parse element changes summary directly
-        return buildFallbackHtmlFromElementSummary(elementChangesSummary);
+        // Fallback for FlexCard
+        return buildFlexCardFallback(componentName, charInfo);
     }
 
-    // CRITICAL: Build concise fallback summaries from ElementChangesSummary - ONLY added/removed
-    private static String buildFallbackHtmlFromElementSummary(String elementSummary) {
+    private static String buildFlexCardFallback(String componentName, String charInfo) {
+        String charDetail = String.isBlank(charInfo) ? '' : ' (' + charInfo + ' chars)';
+        
+        return '<div class="highlight-card">' +
+               '<div class="card-title">🎯 Key Changes</div>' +
+               '<ul>' +
+               '<li>FlexCard UI configuration updated' + charDetail + '</li>' +
+               '<li>PropertySetConfig modified - layout or styling changed</li>' +
+               '<li>Review Raw tab for detailed changes</li>' +
+               '</ul>' +
+               '</div>' +
+               '<div class="highlight-card warning">' +
+               '<div class="card-title">⚠️ Risks</div>' +
+               '<ul>' +
+               '<li>Card display may differ on pages</li>' +
+               '<li>Data binding might be affected</li>' +
+               '</ul>' +
+               '</div>' +
+               '<div class="highlight-card success">' +
+               '<div class="card-title">✅ Test This</div>' +
+               '<ul>' +
+               '<li>Test card on all embedded pages</li>' +
+               '<li>Verify all fields populate correctly</li>' +
+               '</ul>' +
+               '</div>';
+    }
+
+    // ==================== ELEMENT NOTES (OmniScript/DataRaptor) ====================
+    private static String generateElementNotes(String componentName, String elementChangesSummary) {
+        // If no element changes
+        if (String.isBlank(elementChangesSummary) || elementChangesSummary.contains('NO CHANGES')) {
+            return buildNoChangesHtml();
+        }
+        
+        // Extract ONLY additions and deletions
+        String onlyAdditionsAndDeletions = extractAdditionsAndDeletions(elementChangesSummary);
+        
+        // If no additions or deletions, return simple message
+        if (String.isBlank(onlyAdditionsAndDeletions) || 
+            (!onlyAdditionsAndDeletions.contains('=== ADDED') && 
+             !onlyAdditionsAndDeletions.contains('=== REMOVED'))) {
+            return buildNoChangesHtml();
+        }
+        
+        String prompt =
+            'You are analyzing OmniStudio component changes. Your task is to summarize ONLY the elements that were ADDED or REMOVED. COMPLETELY IGNORE any modified elements.\n\n' +
+            
+            '=== CRITICAL RULES ===\n' +
+            '1. ONLY mention elements from the "ADDED" section (marked with +)\n' +
+            '2. ONLY mention elements from the "REMOVED" section (marked with -)\n' +
+            '3. COMPLETELY IGNORE the "MODIFIED" section (marked with ~)\n' +
+            '4. If an element appears in MODIFIED but not in ADDED or REMOVED, DO NOT mention it at all\n' +
+            '5. Each bullet point must be MAX 10 words\n' +
+            '6. Use specific element names from the data below\n\n' +
+            
+            '=== OUTPUT FORMAT ===\n' +
+            'Return ONLY this exact HTML structure with NO additional text:\n\n' +
+            
+            '<div class="highlight-card">\n' +
+            '  <div class="card-title">🎯 Key Changes</div>\n' +
+            '  <ul>\n' +
+            '    <li>Added [element name] to [parent]</li>\n' +
+            '    <li>Removed [element name] from [parent]</li>\n' +
+            '  </ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card warning">\n' +
+            '  <div class="card-title">⚠️ Risks</div>\n' +
+            '  <ul><li>Specific risk related to the changes</li></ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card success">\n' +
+            '  <div class="card-title">✅ Test This</div>\n' +
+            '  <ul><li>Specific test scenario</li></ul>\n' +
+            '</div>\n\n' +
+            
+            '=== EXAMPLE ===\n' +
+            'If the data shows:\n' +
+            '=== ADDED (2) ===\n' +
+            '+ EmailField (Email) under Step2\n' +
+            '+ SaveButton (Button) under Step3\n' +
+            '=== REMOVED (1) ===\n' +
+            '- OldField (Text) from Step1\n' +
+            '=== MODIFIED (10) ===\n' +
+            '~ Step1 configuration changed\n' +
+            '~ Step2 styling updated\n' +
+            '...(more modified items)\n\n' +
+            
+            'YOU SHOULD OUTPUT:\n' +
+            '<div class="highlight-card">\n' +
+            '  <div class="card-title">🎯 Key Changes</div>\n' +
+            '  <ul>\n' +
+            '    <li>Added EmailField to Step2</li>\n' +
+            '    <li>Added SaveButton to Step3</li>\n' +
+            '    <li>Removed OldField from Step1</li>\n' +
+            '  </ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card warning">\n' +
+            '  <div class="card-title">⚠️ Risks</div>\n' +
+            '  <ul><li>Test email validation rules thoroughly</li></ul>\n' +
+            '</div>\n' +
+            '<div class="highlight-card success">\n' +
+            '  <div class="card-title">✅ Test This</div>\n' +
+            '  <ul><li>Verify EmailField captures user input correctly</li></ul>\n' +
+            '</div>\n\n' +
+            
+            'Component: ' + componentName + '\n\n' +
+            '=== ELEMENT CHANGES (FOCUS HERE) ===\n' + onlyAdditionsAndDeletions;
+
+        String html = callGemini(prompt);
+        
+        if (!String.isBlank(html)) return html;
+
+        // Fallback: Build from element summary
+        return buildElementFallback(elementChangesSummary);
+    }
+
+    // ==================== SHARED UTILITIES ====================
+    
+    private static String buildNoChangesHtml() {
+        return '<div class="highlight-card">' +
+               '<div class="card-title">🎯 Key Changes</div>' +
+               '<ul><li>No element-level changes detected</li></ul>' +
+               '</div>' +
+               '<div class="highlight-card warning">' +
+               '<div class="card-title">⚠️ Risks</div>' +
+               '<ul><li>Review configuration changes in other tabs</li></ul>' +
+               '</div>' +
+               '<div class="highlight-card success">' +
+               '<div class="card-title">✅ Test This</div>' +
+               '<ul><li>Verify component functionality is unchanged</li></ul>' +
+               '</div>';
+    }
+    
+    private static String extractAdditionsAndDeletions(String elementSummary) {
+        if (String.isBlank(elementSummary)) return '';
+        
+        List<String> lines = splitLines(elementSummary);
+        List<String> result = new List<String>();
+        
+        Boolean inAddedSection = false;
+        Boolean inRemovedSection = false;
+        Boolean inModifiedSection = false;
+        
+        for (String line : lines) {
+            if (line.contains('=== ADDED')) {
+                inAddedSection = true;
+                inRemovedSection = false;
+                inModifiedSection = false;
+                result.add(line);
+            } else if (line.contains('=== REMOVED')) {
+                inAddedSection = false;
+                inRemovedSection = true;
+                inModifiedSection = false;
+                result.add(line);
+            } else if (line.contains('=== MODIFIED')) {
+                inAddedSection = false;
+                inRemovedSection = false;
+                inModifiedSection = true;
+                // DON'T add modified section to result
+            } else if (line.startsWith('+ ') && inAddedSection) {
+                result.add(line);
+            } else if (line.startsWith('- ') && inRemovedSection) {
+                result.add(line);
+            } else if (line.startsWith('  Details:') && (inAddedSection || inRemovedSection)) {
+                result.add(line);
+            }
+            // SKIP everything in modified section
+        }
+        
+        return String.join(result, '\n');
+    }
+
+    private static String buildElementFallback(String elementSummary) {
         List<String> lines = splitLines(elementSummary);
         List<String> added = new List<String>();
         List<String> removed = new List<String>();
@@ -112,10 +273,10 @@ public with sharing class DV_AINotesUtil {
                 if (content.length() > 80) content = content.substring(0, 77) + '...';
                 removed.add(content);
             }
-            // SKIP modified elements - only care about additions/deletions
+            // SKIP modified elements (lines starting with '~')
         }
         
-        // Build Key Changes card - ONLY show added/removed
+        // Build Key Changes card
         String keyChangesHtml = '<div class="highlight-card"><div class="card-title">🎯 Key Changes</div><ul>';
         
         Integer totalChanges = added.size() + removed.size();
@@ -125,19 +286,19 @@ public with sharing class DV_AINotesUtil {
             Integer itemsShown = 0;
             
             for (String item : added) {
-                if (itemsShown >= 3) break;
+                if (itemsShown >= 5) break;
                 keyChangesHtml += '<li>Added: ' + escapeHtml(item) + '</li>';
                 itemsShown++;
             }
             
             for (String item : removed) {
-                if (itemsShown >= 3) break;
+                if (itemsShown >= 5) break;
                 keyChangesHtml += '<li>Removed: ' + escapeHtml(item) + '</li>';
                 itemsShown++;
             }
             
-            if (totalChanges > 3) {
-                keyChangesHtml += '<li>' + (totalChanges - 3) + ' more changes</li>';
+            if (totalChanges > 5) {
+                keyChangesHtml += '<li>' + (totalChanges - 5) + ' more changes</li>';
             }
         }
         keyChangesHtml += '</ul></div>';
@@ -167,6 +328,43 @@ public with sharing class DV_AINotesUtil {
         return keyChangesHtml + risksHtml + testHtml;
     }
     
+    // ==================== GEMINI API CALL ====================
+    
+    private static String callGemini(String prompt) {
+        try {
+            HttpRequest req = new HttpRequest();
+            req.setMethod('POST'); 
+            req.setEndpoint(GEMINI_ENDPOINT + '?key=' + GEMINI_API_KEY);
+            req.setHeader('Content-Type','application/json'); 
+            req.setTimeout(120000);
+            
+            Map<String,Object> payload = new Map<String,Object>{
+                'contents' => new List<Object>{
+                    new Map<String,Object>{
+                        'parts' => new List<Object>{ new Map<String,Object>{ 'text' => prompt } }
+                    }
+                }
+            };
+            
+            req.setBody(JSON.serialize(payload));
+            Http http = new Http(); 
+            HttpResponse res = http.send(req);
+            
+            System.debug('Gemini API Status Code: ' + res.getStatusCode());
+            
+            if (res.getStatusCode() == 200) {
+                String parsed = parseGeminiHtml(res.getBody());
+                if (!String.isBlank(parsed)) return cleanForUi(parsed);
+            } else {
+                System.debug('Gemini API Error: ' + res.getBody());
+            }
+        } catch (Exception e) {
+            System.debug('AI Notes error: ' + e.getMessage());
+        }
+        
+        return null;
+    }
+    
     private static String escapeHtml(String text) {
         if (String.isBlank(text)) return '';
         return text.replace('&', '&amp;')
@@ -176,28 +374,28 @@ public with sharing class DV_AINotesUtil {
                    .replace('\'', '&#39;');
     }
 
-    private static String parseGeminiHtml(String jsonResponse){
-        if(String.isBlank(jsonResponse)) return null;
-        try{
+    private static String parseGeminiHtml(String jsonResponse) {
+        if (String.isBlank(jsonResponse)) return null;
+        try {
             Map<String,Object> parsed = (Map<String,Object>) JSON.deserializeUntyped(jsonResponse);
             List<Object> cand = (List<Object>) parsed.get('candidates');
-            if(cand==null || cand.isEmpty()) return null;
+            if (cand == null || cand.isEmpty()) return null;
             Map<String,Object> first = (Map<String,Object>) cand[0];
             Map<String,Object> content = (Map<String,Object>) first.get('content');
-            if(content==null) return null;
+            if (content == null) return null;
             List<Object> parts = (List<Object>) content.get('parts');
-            if(parts==null || parts.isEmpty()) return null;
+            if (parts == null || parts.isEmpty()) return null;
             Map<String,Object> firstPart = (Map<String,Object>) parts[0];
             Object text = firstPart.get('text');
-            return (text==null)? null : String.valueOf(text);
-        } catch(Exception e){ 
+            return (text == null) ? null : String.valueOf(text);
+        } catch (Exception e) { 
             System.debug('Error parsing Gemini response: ' + e.getMessage());
             return null; 
         }
     }
     
-    public static String cleanForUi(String html){
-        if(String.isBlank(html)) return '';
+    public static String cleanForUi(String html) {
+        if (String.isBlank(html)) return '';
         String out = html.replace('```html','').replace('```','');
         out = out.replaceAll('(?is)<script[\\s\\S]*?</script>','');
         out = out.replaceAll('(?is)<style[\\s\\S]*?</style>','');
@@ -205,18 +403,12 @@ public with sharing class DV_AINotesUtil {
         return out;
     }
     
-    private static List<String> splitLines(String s){
-        if(s==null) return new List<String>();
+    private static List<String> splitLines(String s) {
+        if (s == null) return new List<String>();
         String norm = s.replace('\r\n','\n');
         return new List<String>(norm.split('\n', -1));
     }
     
-    // DEPRECATED - no longer used
-    public static String deepDiff(String oldJson, String newJson) {
-        return '';
-    }
-    
-    // UTILITY: Create unified diff for text comparison (kept for reference)
     public static String unifiedDiff(String oldText, String newText) {
         if (String.isBlank(oldText)) oldText = '';
         if (String.isBlank(newText)) newText = '';
